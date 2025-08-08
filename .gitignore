@@ -3,3 +3,4 @@ logs/*
 locust/user*
 venv
 __pycache__
+.env

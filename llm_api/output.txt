@@ -13,3 +13,5 @@ Setting `pad_token_id` to `eos_token_id`:2 for open-end generation.
 INFO:     127.0.0.1:60792 - "POST /generate HTTP/1.1" 200 OK
 Setting `pad_token_id` to `eos_token_id`:2 for open-end generation.
 INFO:     127.0.0.1:60994 - "POST /generate HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:2 for open-end generation.
+INFO:     127.0.0.1:39350 - "POST /generate HTTP/1.1" 200 OK

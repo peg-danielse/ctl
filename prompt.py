@@ -1,5 +1,4 @@
 GENERATE_PROMPT = '''
-knowledge
 {knowledge_yaml}
 
 anomaly_report:
