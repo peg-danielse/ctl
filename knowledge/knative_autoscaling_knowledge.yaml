@@ -1,0 +1,136 @@
+knative_autoscaling:
+  metric:
+    key: autoscaling.knative.dev/metric
+    values: ["concurrency", "rps"]
+    default: "concurrency"
+    description: |
+      Metric used for autoscaling.
+      "concurrency" scales based on concurrent requests per pod.
+      "rps" scales based on requests per second per pod (requires rps-enabled revision).
+    example_values: ["concurrency", "rps"]
+    conditions_to_adjust:
+      - Switch to "rps" for high-throughput, short-duration requests
+      - Use "concurrency" for long-lived or variable-load requests
+
+  target:
+    key: autoscaling.knative.dev/target
+    value_type: integer
+    description: |
+      The target value of the selected metric (concurrency or rps) per pod.
+      e.g. target = 100 means 100 rps or 100 concurrent requests per pod.
+    example_values: [50, 100, 150, 200]
+    conditions_to_adjust:
+      - Lower if pods are underutilized
+      - Raise if high utilization causes scaling too early
+
+  min_scale:
+    key: autoscaling.knative.dev/min-scale
+    value_type: integer
+    default: 0
+    description: |
+      Minimum number of pods for this revision.
+      Set to >0 to avoid scale-to-zero and cold starts.
+    example_values: [0, 1, 2]
+    conditions_to_adjust:
+      - Increase if cold starts are negatively impacting latency
+      - Set to 0 to allow scale-to-zero when traffic is idle
+
+  max_scale:
+    key: autoscaling.knative.dev/max-scale
+    value_type: integer
+    default: 0  # 0 means unlimited
+    description: |
+      Maximum number of pods for this revision.
+      Prevents unbounded scaling during traffic spikes.
+    example_values: [2, 5, 10]
+    conditions_to_adjust:
+      - Decrease to control cost or limit concurrency
+      - Increase to prevent bottlenecks during high traffic
+
+  scale_down_delay:
+    key: autoscaling.knative.dev/scale-down-delay
+    value_type: duration
+    range: [0s, 1h]
+    default: 0s
+    description: |
+      Time to wait at low traffic before scaling down.
+      Helps avoid cold starts due to short-lived traffic gaps.
+    example_values: ["0s", "30s", "1m"]
+    conditions_to_adjust:
+      - Increase if frequent cold starts are observed
+      - Keep low for latency-insensitive or cost-sensitive services
+
+  stable_window:
+    key: autoscaling.knative.dev/window
+    value_type: duration
+    range: [6s, 1h]
+    default: 60s
+    description: |
+      Time window over which metrics are averaged during stable mode.
+      Controls scaling smoothness.
+    example_values: ["30s", "60s", "120s"]
+    conditions_to_adjust:
+      - Raise to reduce scaling jitter
+      - Lower to react more quickly to changes
+
+  panic_window_percentage:
+    key: autoscaling.knative.dev/panic-window-percentage
+    value_type: float
+    range: [1.0, 100.0]
+    default: 10.0
+    description: |
+      Percentage of stable window used when in panic mode.
+      Shorter window → more reactive scaling during spikes.
+    example_values: [10.0, 20.0, 50.0]
+    conditions_to_adjust:
+      - Increase to average over more traffic in panic mode
+      - Decrease to react faster to bursts
+
+  panic_threshold_percentage:
+    key: autoscaling.knative.dev/panic-threshold-percentage
+    value_type: float
+    range: [110.0, 1000.0]
+    default: 200.0
+    description: |
+      Traffic threshold (% of expected capacity) to enter panic mode.
+      Higher = more tolerant of temporary spikes before scaling aggressively.
+    example_values: [150.0, 200.0, 400.0]
+    conditions_to_adjust:
+      - Lower to react earlier to overload
+      - Raise to avoid scaling due to brief bursts
+
+  max_scale_up_rate:
+    key: max-scale-up-rate
+    scope: global
+    value_type: float
+    default: 1000.0
+    description: |
+      Maximum ratio of desired pods to existing pods during scale-up.
+      Controls how quickly revisions can scale.
+    example_values: [2.0, 5.0, 10.0]
+    conditions_to_adjust:
+      - Reduce to throttle explosive scale-ups
+      - Increase for very bursty workloads
+
+  max_scale_down_rate:
+    key: max-scale-down-rate
+    scope: global
+    value_type: float
+    default: 2.0
+    description: |
+      Maximum ratio of current pods to desired pods during scale-down.
+      Controls how quickly revisions can scale down.
+    example_values: [1.5, 2.0, 4.0]
+    conditions_to_adjust:
+      - Raise to reduce pod count faster
+      - Lower to reduce cold start risk and stabilize traffic
+
+policy_constraints:
+  - 'All services like "memcached" and "frontend" must remain at 1 replica.'
+  - 'These services are not autoscaled.'
+  - 'If performance issues are detected on fixed-replica services, recommend vertical scaling (adjust CPU/memory requests/limits).'
+  - 'Do not set `min-scale` or `max-scale` above enforced limits per revision policy.'
+  - '`rps` metric must only be used if enabled on the revision.'
+  - 'Cold start sensitivity should be taken into account for user-facing services.'
+  - 'Do not exceed cost-control policies defined per environment (e.g., max_scale = 10).'
+  - 'Avoid aggressive panic thresholds unless backed by fast cold start and high resource headroom.'

@@ -1,0 +1,66 @@
+knative_autoscaling:
+  metric:
+    key: autoscaling.knative.dev/metric
+    values: ["concurrency", "rps"]
+
+  target:
+    key: autoscaling.knative.dev/target
+    example_values: [50, 100, 150, 200]
+
+  min_scale:
+    key: autoscaling.knative.dev/min-scale
+    default: 0
+    example_values: [0, 1, 2]
+
+  max_scale:
+    key: autoscaling.knative.dev/max-scale
+    example_values: [0, 2, 5, 10]
+    notes:
+      - '0 means unlimited'
+   
+  scale_down_delay:
+    key: autoscaling.knative.dev/scale-down-delay
+    value_type: duration
+    range: [0s, 1h]
+    example_values: ["0s", "30s", "1m"]
+   
+  stable_window:
+    key: autoscaling.knative.dev/window
+    value_type: duration
+    range: [6s, 1h]
+    example_values: ["30s", "60s", "120s"]
+   
+  panic_window_percentage:
+    key: autoscaling.knative.dev/panic-window-percentage
+    range: [1.0, 100.0]
+    example_values: [10.0, 20.0, 50.0]
+
+  panic_threshold_percentage:
+    key: autoscaling.knative.dev/panic-threshold-percentage
+    range: [110.0, 1000.0]
+    example_values: [150.0, 200.0, 400.0]
+
+  max_scale_up_rate:
+    key: max-scale-up-rate
+    scope: global
+    value_type: float
+    default: 1000.0
+    example_values: [2.0, 5.0, 10.0]
+  
+  max_scale_down_rate:
+    key: max-scale-down-rate
+    scope: global
+    value_type: float
+    default: 2.0
+    example_values: [1.5, 2.0, 4.0]
+  
+  requested_cpu:
+    key: requested_cpu
+    value_type: milicores
+    default: 100m
+    example_values: [100m, 200m, 400m]
+  
+policy_constraints:
+  - 'All services like "memcached" and "frontend" must remain at 1 replica.'
+  - 'These services are not autoscaled.'
+  - 'If performance issues are detected on fixed-replica services, recommend vertical scaling (adjust CPU/memory requests/limits).'

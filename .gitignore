@@ -1,0 +1,5 @@
+output/*
+logs/*
+locust/user*
+venv
+__pycache__
