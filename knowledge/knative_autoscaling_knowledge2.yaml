@@ -1,41 +1,49 @@
 knative_autoscaling:
   metric:
+    scope: service
     key: autoscaling.knative.dev/metric
     values: ["concurrency", "rps"]
 
   target:
+    scope: service
     key: autoscaling.knative.dev/target
     example_values: [50, 100, 150, 200]
 
   min_scale:
+    scope: service
     key: autoscaling.knative.dev/min-scale
     default: 0
     example_values: [0, 1, 2]
 
   max_scale:
+    scope: service
     key: autoscaling.knative.dev/max-scale
     example_values: [0, 2, 5, 10]
     notes:
       - '0 means unlimited'
    
   scale_down_delay:
+    scope: service
     key: autoscaling.knative.dev/scale-down-delay
     value_type: duration
     range: [0s, 1h]
     example_values: ["0s", "30s", "1m"]
    
   stable_window:
+    scope: service
     key: autoscaling.knative.dev/window
     value_type: duration
     range: [6s, 1h]
     example_values: ["30s", "60s", "120s"]
    
   panic_window_percentage:
+    scope: service
     key: autoscaling.knative.dev/panic-window-percentage
     range: [1.0, 100.0]
     example_values: [10.0, 20.0, 50.0]
 
   panic_threshold_percentage:
+    scope: service
     key: autoscaling.knative.dev/panic-threshold-percentage
     range: [110.0, 1000.0]
     example_values: [150.0, 200.0, 400.0]
@@ -56,6 +64,7 @@ knative_autoscaling:
   
   requested_cpu:
     key: requested_cpu
+    scope: service
     value_type: milicores
     default: 100m
     example_values: [100m, 200m, 400m]

@@ -12,18 +12,18 @@ anomaly_report:
 metric_snapshot:
 {snapshot}
 
-current_configuration:
---- service configuration
-{kn_knobs}
---- global configuration
-{vscale_knobs}
+service configuration
+```yaml
+{service_config}
+```
+
+global configuration:
+```yaml
+{auto_config}
+```
 
 request: |
-  Answer fully in yaml
-  Provide a revised configuration for the `checkout-service`
-  that aims to resolve the latency anomaly while respecting the above constraints using both horizontal and vertical scaling using the provided keys and values.
-  Always end answer with the produced configuration.
-  
+  Provide a revised configuration that aims to resolve the latency anomaly while respecting the above constraints using both horizontal and vertical scaling using the provided keys and values.
 
 '''
 
@@ -43,8 +43,8 @@ Anomaly:
     {snapshot}
 
 applied config:
-  {knative_scaling}
-  {v_scaling}
+  {service_config}
+  {auto_config}
 
 result_snapshot:
   {config_performance}

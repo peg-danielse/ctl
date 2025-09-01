@@ -76,7 +76,7 @@ def locust_load_test(label, base_label, loop): # todo add all loadtest configura
         "--w-mean", str(3000),
         "--w-ls-y", str(10000),
         "--w-dt", str(40),
-        "--seed", str(simple_hash(f"fix_{loop}")) #  str(simple_hash(f"{base_label}}_{loop}"))
+        "--seed", str(simple_hash(f"{base_label}_{loop}")) # str(simple_hash(f"fix_{loop}"))
     ]
 
     print(f"Test {label} started...\n")
@@ -117,6 +117,27 @@ def read_data(label, loop):
 
     return h_df, r_df, t_df, m_dfs
 
+def parse_cpu_value(cpu_str):
+    """
+    Parse CPU value from Kubernetes format to cores.
+    Supports formats like: "100m", "0.5", "1", "2.5"
+    """
+    if not cpu_str:
+        return 0.0
+    
+    cpu_str = str(cpu_str).strip()
+    
+    try:
+        if cpu_str.endswith('m'):
+            # Millicores: "100m" -> 0.1 cores
+            return int(cpu_str[:-1]) / 1000.0
+        else:
+            # Cores: "0.5", "1", "2.5" -> direct value
+            return float(cpu_str)
+    except (ValueError, TypeError) as e:
+        print(f"Warning: Could not parse CPU value '{cpu_str}': {e}")
+        return 0.0
+
 def metric_snapshot(service_name, trace_df, metric_dfs, anomaly_index, history_df, anomalies, knobs):
     # Get anomaly window
     start_time = trace_df["startTime"][anomaly_index]
@@ -126,6 +147,20 @@ def metric_snapshot(service_name, trace_df, metric_dfs, anomaly_index, history_d
 
     # Filter history_df for the window
     hist_window = history_df[(history_df["Timestamp"] >= start_minus_10s) & (history_df["Timestamp"] <= start_plus_duration)].copy()
+
+    # Fill NaN values with the maximum value of each column
+    if not hist_window.empty:
+        for column in hist_window.columns:
+            if column != "Timestamp":  # Skip timestamp column
+                max_value = hist_window[column].max()
+                if pd.notna(max_value):  # Only fill if max value is not NaN
+                    hist_window[column] = hist_window[column].fillna(max_value)
+                else:
+                    # If all values in column are NaN, fill with 0
+                    hist_window[column] = hist_window[column].fillna(0)
+    else:
+        # If hist_window is empty, fill with 0
+        hist_window = hist_window.fillna(0)
 
     # Filter service metrics for the window
     m_df = metric_dfs.get(service_name, pd.DataFrame())
@@ -166,13 +201,28 @@ def metric_snapshot(service_name, trace_df, metric_dfs, anomaly_index, history_d
     changed_service_anomaly_count = len([1 for a_s_name, ai, *_ in anomalies if service_name == a_s_name and ai in anomaly_df.index])
     total_anomaly_count = len([1 for _, ai, *_ in anomalies if ai in anomaly_df.index])
 
+    pprint(knobs)
+
+    # Calculate CPU utilization correctly
+    try:
+        cpu_request_str = knobs.get('spec', {}).get('template', {}).get('spec', {}).get('containers', [{}])[0].get('resources', {}).get('requests', {}).get('cpu')
+        cpu_request_cores = parse_cpu_value(cpu_request_str)
+        total_requested_cpu = cpu_request_cores * actual_pods if actual_pods and cpu_request_cores else 0.0
+        
+        cpu_utilization_percent = 0.0
+        if service_max_cpu_usage and total_requested_cpu > 0:
+            cpu_utilization_percent = (service_max_cpu_usage / total_requested_cpu) * 100
+    except (KeyError, IndexError, TypeError, ValueError) as e:
+        print(f"Warning: Could not parse CPU request from configuration: {e}")
+        cpu_utilization_percent = 0.0
+
     snapshot = pd.DataFrame([{
         "max_throughput": max_throughput,
         "total_errors": total_errors,
         "total_anomaly_count": total_anomaly_count,
         "changed_service_anomaly_count": changed_service_anomaly_count,
         "service_cpu_cores": service_max_cpu_usage,
-        "service_cpu_utilization_of_requested": ("%.0f" % (service_max_cpu_usage / ((int(knobs['requested_cpu'][:-1]) / 1000.0) * actual_pods) * 100)) + '%',
+        "service_cpu_utilization_of_requested": f"{cpu_utilization_percent:.0f}%",
         "system_cpu_cores_usage": total_max_cpu_usage,
         "system_cpu_cores_max": 14,
         "p99": p99,
@@ -182,8 +232,6 @@ def metric_snapshot(service_name, trace_df, metric_dfs, anomaly_index, history_d
         "requested_pods": requested_pods,
     }])
 
-    # print(service_max_cpu_usage, int(knobs['requested_cpu'][:-1]), int(knobs['requested_cpu'][:-1]) / 1000, actual_pods, service_max_cpu_usage / ((int(knobs['requested_cpu'][:-1]) / 1000.0) * actual_pods))
-
     # Indent YAML for prompt
     snapshot_yaml = yaml.dump(snapshot.to_dict(orient='records')[0], default_flow_style=False, sort_keys=False)
     snapshot_yaml = textwrap.indent(snapshot_yaml, '  ')
@@ -192,105 +240,74 @@ def metric_snapshot(service_name, trace_df, metric_dfs, anomaly_index, history_d
 
 
 def read_prompt(response):
-    matches = re.findall(r"```yaml\n([\s\S]*?)\n```", response.json()["response"])
+    matches = re.findall(r"```yaml\n([\s\S]*?)\n```", response)
 
     yaml_str = ""
     for m in matches:
-        yaml_str = m.strip()
+        yaml_str = yaml_str + m.strip() + "\n---\n"
     
     return yaml_str
 
-def get_knative_knobs(service_config, auto_config=None):
-    """
-    Extracts Knative autoscaling annotations and requested CPU from a Knative service config.
-    """
-    knobs = {}
-    # Traverse to annotations
-    try:
-        annotations = service_config['spec']['template']['metadata']['annotations']
-        for k, v in annotations.items():
-            if k.startswith('autoscaling.knative.dev/'):
-                knobs[k] = v
-    except Exception:
-        pass
-
-    # Get requested CPU
-    try:
-        containers = service_config['spec']['template']['spec']['containers']
-        if containers and 'resources' in containers[0] and 'requests' in containers[0]['resources']:
-            cpu = containers[0]['resources']['requests'].get('cpu')
-            if cpu:
-                knobs['requested_cpu'] = cpu
-    except Exception:
-        pass
-
-    return knobs
-
-def set_knative_knobs(file_path, knob_values):
-    """
-    Updates the knative autoscaling annotations and requested CPU in the given service YAML file.
-    knob_values: dict of {knob_name: value}
-    """
-    with open(file_path, 'r') as f:
-        docs = list(yaml.safe_load_all(f))
-    # Assume first doc is the service config
-    service = docs[0]
-    annotations = service['spec']['template']['metadata'].setdefault('annotations', {})
-    for k, v in knob_values.items():
-        if k.startswith('autoscaling.knative.dev/'):
-            annotations[k] = v
-        elif k == 'requested_cpu':
-            containers = service['spec']['template']['spec']['containers']
-            if containers:
-                containers[0].setdefault('resources', {}).setdefault('requests', {})['cpu'] = v
-    docs[0] = service
-    with open(file_path, 'w') as f:
-        yaml.dump_all(docs, f)
-
-def get_vscaling_knobs(service_config, auto_config):
-    """
-    Extracts all relevant vscaling/autoscaler keys from the config-autoscaler.yaml.
-    """
-    knobs = {}
-    try:
-        if 'data' in auto_config:
-            for k, v in auto_config['data'].items():
-                knobs[k] = v
-    except Exception:
-        pass
-    return knobs
-
-def set_vscaling_knobs(file_path, knob_values):
-    """
-    Updates the vscaling/autoscaler keys in the file.
-    knob_values: dict of {knob_name: value}
-    """
-    with open(file_path, 'r') as f:
-        docs = list(yaml.safe_load_all(f))
-    # Assume first doc is the configmap
-    config = docs[0]
-    data = config.setdefault('data', {})
-    for k, v in knob_values.items():
-        data[k] = v
-    docs[0] = config
-    with open(file_path, 'w') as f:
-        yaml.dump_all(docs, f)
-
 def load_yaml_as_string(filepath):
     """
-    Loads a YAML file.
+    Loads a YAML file and returns its string representation.
+    Handles both regular YAML files and sequenced files.
     """
-    with open(filepath, 'r') as f:
-        data = yaml.safe_load(f)
+    data = load_yaml_as_dict(filepath)
+    if data is None:
+        return ""
     return yaml.dump(data)
 
 def load_yaml_as_dict(filepath):
     """
     Loads a YAML file and returns its string representation for prompt insertion.
+    Handles both regular YAML files and sequenced files (with # --- START: seq=X --- markers).
+    """
+    if not os.path.exists(filepath):
+        return None
+    
+    with open(filepath, 'r') as f:
+        content = f.read()
+    
+    # Check if this is a sequenced file
+    if "# --- START: seq=" in content:
+        # This is a sequenced file, get the latest configuration
+        return get_latest_config_from_sequenced_file(filepath)
+    else:
+        # This is a regular YAML file
+        return yaml.safe_load(content)
+
+def get_latest_config_from_sequenced_file(filepath):
+    """
+    Extracts the latest configuration from a sequenced file.
+    Returns the configuration from the highest sequence number.
     """
     with open(filepath, 'r') as f:
-        data = yaml.safe_load(f)
-    return data
+        content = f.read()
+    
+    # Find all sequence blocks
+    matches = re.findall(r'(?s)# --- START: seq=(\d+) ---\s*(.*?)\s*# --- END: seq=\1 ---', content)
+    
+    if not matches:
+        return None
+    
+    # Get the highest sequence number
+    latest_seq = max(int(seq) for seq, _ in matches)
+    
+    # Find the content for the latest sequence
+    for seq, block in matches:
+        if int(seq) == latest_seq:
+            # Split the block to get just the configuration (before the --- separator)
+            parts = block.strip().split('---', 1)
+            if len(parts) >= 1:
+                config_content = parts[0].strip()
+                try:
+                    return yaml.safe_load(config_content)
+                except yaml.YAMLError as e:
+                    print(f"Warning: Could not parse YAML from sequence {latest_seq} in {filepath}: {e}")
+                    return None
+    
+    return None
 
 
 # Find outliers in the traces using an IsolationForest classifier.
@@ -330,8 +347,8 @@ def trace_anomaly_detection(trace_df):
 
 @report_time
 def generate_and_measure(label, loop):
-    # client = get_k8s_api_client()
-    # reset_k8s(client, PATH + f"/output/{label}/config" )
+    client = get_k8s_api_client()
+    reset_k8s(client, PATH + f"/output/{label}/config" )
     
     history_df, responce_df, trace_df, metric_dfs = read_data(label, loop)
     anomalies = trace_anomaly_detection(trace_df)
@@ -349,20 +366,15 @@ def generate_and_measure(label, loop):
         # Prepare data
         service_config = load_yaml_as_dict(PATH + f"/output/{label}/config/{service_name}.yaml")
         auto_config = load_yaml_as_dict(PATH + f"/output/{label}/config/config-autoscaler.yaml")
-
-        kn_knobs = get_knative_knobs(service_config, auto_config)
-        vscale_knobs = get_vscaling_knobs(service_config, auto_config)
-
-
-
-        pprint(kn_knobs)
-        pprint(vscale_knobs)
-
-        timestamp, duration, snapshot = metric_snapshot(service_name, trace_df, metric_dfs, ai, history_df, anomalies, kn_knobs)
-
-        # In the prompt construction, update kn_knobs and vscale_knobs to be indented YAML blocks
-        kn_knobs_yaml = textwrap.indent(yaml.dump(kn_knobs, default_flow_style=False), '  ')
-        vscale_knobs_yaml = textwrap.indent(yaml.dump(vscale_knobs, default_flow_style=False), '  ')
+        
+        if service_config is None:
+            print(f"Warning: Could not load service configuration for {service_name}, skipping...")
+            continue
+            
+        if auto_config is None:
+            print(f"Warning: Could not load auto-configuration, skipping...")
+            continue
+        timestamp, duration, snapshot = metric_snapshot(service_name, trace_df, metric_dfs, ai, history_df, anomalies, service_config)
 
         prompt = GENERATE_PROMPT.format(
             knowledge_yaml=load_yaml_as_string(PATH + '/knowledge/knative_autoscaling_knowledge2.yaml'),
@@ -372,13 +384,11 @@ def generate_and_measure(label, loop):
             timestamp=timestamp,
             duration=duration,
             snapshot=snapshot,
-            kn_knobs=yaml.dump(service_config),
-            vscale_knobs=yaml.dump(auto_config)
+            service_config=yaml.dump(service_config),
+            auto_config=yaml.dump(auto_config)
         )
 
-        print(prompt)
-
-        message = [["user", prompt]]
+        message = [["system", "You are a Kubernetes expert. Please provide only a revised configuration that aims to resolvve the following anomaly"], ["user", prompt]]
 
         payload = {
             "messages": message,
@@ -388,21 +398,55 @@ def generate_and_measure(label, loop):
         response = requests.post(GEN_API_URL, json=payload)
         data = response.json()["response"]
 
-
-        pprint(data)
-        break
-
         # save the prompt
-        append_generation(PATH + f"/output/{label}/{label}_{loop}_prompts.json", ai, data) 
+        append_generation(PATH + f"/output/{label}/{label}_{loop}_prompts.json", ai, data)
+
+        print(data)
 
         # read the configuration update
         configuration_update = read_prompt(data)
-
+        
         print(configuration_update)
 
-        reset_k8s(client, PATH + f"/output/{label}/config/*.yaml" )
+        configuration_update = list(yaml.safe_load_all(configuration_update))
 
-        break # temporary
+        
+        if configuration_update:
+            error_count = 0
+            # Apply the configuration update
+            for config in configuration_update:
+                print(config)
+                try:
+                    apply_yaml_configuration(config, client)
+                except Exception as e:
+                    print(f"Warning: Could not apply configuration: {e}")
+                    error_count += 1
+                    continue
+
+            if error_count == len(configuration_update):
+                print(f"Warning: All configurations failed to apply. Skipping load testing.")
+                continue
+
+            # Perform load testing using Locust
+            post_update_label = f"{label}_{loop}_post_update_{ai}"
+            locust_load_test(post_update_label, label, loop)
+
+            # Collect performance data after configuration update
+            try:
+                # Get performance metrics for the updated configuration
+                post_performance = get_kpi_list(post_update_label, label, service_name)
+                
+                # Log the performance data
+                performance_file = PATH + f"/output/{label}/{label}_{loop}_performance.json"
+                append_generation(performance_file, ai, json.dumps(post_performance))
+                
+                print(f"Performance after update: {post_performance}")
+                
+            except Exception as e:
+                print(f"Warning: Could not collect performance data after update: {e}")
+                post_performance = None
+        
+        reset_k8s(client, PATH + f"/output/{label}/config" )
 
 
 def clean_float(value):
@@ -414,61 +458,221 @@ def clean_float(value):
 
 
 def evolve(label : str, loop: int):
-    configs = load_generated_configurations(label, loop)
-    configs = [(i, yaml.safe_load_all(sol)) for i, sol in configs]
+    """
+    Analyze updated configurations and their performance, then choose which configuration updates to accept.
+    This function implements a multi-objective optimization approach to select the best configurations.
+    """
+    print(f"Starting evolution process for label: {label}, loop: {loop}")
+    
+    # Load generated configurations
+    try:
+        # Load the stored LLM responses and extract configurations the same way as generate_and_measure
+        configs = []
+        prompts_file = PATH + f"/output/{label}/{label}_{loop}_prompts.json"
+        
+        if os.path.exists(prompts_file):
+            # Get all stored responses
+            stored_responses = get_generation_content(prompts_file)
+            
+            for anomaly_id, response_data in stored_responses:
+                try:
+                    # Extract YAML from response using the same method as generate_and_measure
+                    yaml_content = read_prompt(response_data)
+                    if yaml_content:
+                        # Parse YAML using the same method as generate_and_measure
+                        parsed_configs = list(yaml.safe_load_all(yaml_content))
+                        configs.append((anomaly_id, parsed_configs))
+                except Exception as e:
+                    print(f"Warning: Could not parse configuration for anomaly {anomaly_id}: {e}")
+                    continue
+        
+        print(f"Loaded {len(configs)} generated configurations")
+    except Exception as e:
+        print(f"Error loading generated configurations: {e}")
+        return {}
 
-    trails = get_generation_content_perf(PATH + f"/output/{label}/{label}_{loop}_performance.json")
-    perfs = [(i, yaml.safe_load(p)) for i, p in trails]
-    perfs = [(i, p) for i, p in perfs if "Audit-Id" not in p]
+    # Load performance data
+    try:
+        trails = get_generation_content_perf(PATH + f"/output/{label}/{label}_{loop}_performance.json")
+        perfs = [(i, json.loads(p)) for i, p in trails]
+        perfs = [(i, p) for i, p in perfs if "Audit-Id" not in p]
+        print(f"Loaded {len(perfs)} performance records")
+    except Exception as e:
+        print(f"Warning: Could not load performance data: {e}")
+        perfs = []
 
-    perfs = [(i, p) for i, p in perfs if 300 <= p.get('max_throughput', 0)]
+    # Filter out configurations with poor throughput (below minimum threshold)
+    min_throughput = 300
+    perfs = [(i, p) for i, p in perfs if p.get('max_throughput', 0) >= min_throughput]
+    print(f"After throughput filtering: {len(perfs)} configurations")
 
     perf_dict = dict(perfs)
-    # Step 4: Filter configs to include only those with a corresponding perf entry
+    
+    # Merge configurations with their performance data
     merged = [
         (i, config, perf_dict[i])
         for i, config in configs
         if i in perf_dict
     ]
+    
+    print(f"Successfully merged {len(merged)} configuration-performance pairs")
 
+    if not merged:
+        print("No valid configuration-performance pairs found. Skipping evolution.")
+        return {}
+
+    # Multi-objective optimization: Sort by multiple performance criteria
+    # Lower values are better for all criteria
     sorted_data = sorted(
         merged,
         key=lambda item: (
-            clean_float(item[2].get('total_anomaly_count')),
-            clean_float(item[2].get('changed_service_anomaly_count')),
-            clean_float(item[2].get('total_errors')),
-            clean_float(item[2].get('service_max_cpu_usage')),
-            clean_float(item[2].get('total_max_cpu_usage')),
+            clean_float(item[2].get('total_anomaly_count', 0)),      # Fewer anomalies is better
+            clean_float(item[2].get('changed_service_anomaly_count', 0)),  # Fewer service-specific anomalies is better
+            clean_float(item[2].get('total_errors', 0)),             # Fewer errors is better
+            clean_float(item[2].get('p99', 0)),                      # Lower p99 latency is better
+            clean_float(item[2].get('p50', 0)),                      # Lower p50 latency is better
+            clean_float(item[2].get('service_max_cpu_usage', 0)),    # Lower CPU usage is better
+            clean_float(item[2].get('total_max_cpu_usage', 0)),      # Lower total CPU usage is better
+            -clean_float(item[2].get('max_throughput', 0)),          # Higher throughput is better (negative for ascending sort)
         )
     )
 
+    print(f"Sorted configurations by performance criteria")
+
+    # Select the best configuration for each service
     best = {}
-    for p in reversed(sorted_data):
-        # print(p[0], p[2])
-
-        name = []
-        docs = []
-        for d in p[1]:
-            name.append(d.get('metadata', {}).get('name'))
-            docs.append(d)
-            # print(d.get('metadata', {}).get('name'))
+    for p in reversed(sorted_data):  # Reverse to get best first
+        anomaly_id, config, performance = p
         
-        for n in name:
-            best[n] = (p[0], docs, p[2])
-    
+        service_names = []
+        docs = []
+        for d in config:            
+            service_name = d.get('metadata', {}).get('name')
+            if service_name:
+                service_names.append(service_name)
+                docs.append(d)
+        
+        # For each service in this configuration, check if it's the best we've seen
+        for service_name in service_names:
+            if service_name not in best or is_better_performance(performance, best[service_name][2]):
+                best[service_name] = (anomaly_id, docs, performance)
+                print(f"New best configuration for {service_name}: anomaly_id={anomaly_id}")
 
-    for service_name, (s, c, p) in best.items():
+    # Apply the selected configurations
+    print(f"\nApplying {len(best)} best configurations:")
+    applied_count = 0
+    for service_name, (anomaly_id, configs, performance) in best.items():
         fp = f"{PATH}/output/{label}/config/{service_name}.yaml"
-        print(f"update configuration for {service_name} \n performance: {p} \n file : {fp}")
-        for d in c:
+        print(f"  Updating {service_name} (anomaly_id={anomaly_id})")
+        print(f"    Performance: {performance}")
+        print(f"    File: {fp}")
+        
+        # Find the configuration document for this specific service
+        applied = False
+        for d in configs:
             if service_name == d.get('metadata', {}).get('name'):
-                append_generation(fp, max(get_existing_seq(fp)) + 1, yaml.dump(d) + "\n---\n" + str(p)) 
+                try:
+                    # Append the new configuration with performance data
+                    next_seq = max(get_existing_seq(fp)) + 1
+                    append_generation(fp, next_seq, yaml.dump(d) + "\n---\n" + str(performance))
+                    print(f"    Applied configuration with sequence {next_seq}")
+                    applied = True
+                    applied_count += 1
+                    break
+                except Exception as e:
+                    print(f"    Error applying configuration: {e}")
+        
+        if not applied:
+            print(f"    Warning: No valid configuration found for {service_name}")
 
+    print(f"Evolution completed. {applied_count} out of {len(best)} services updated successfully.")
+    
+    # Log evolution summary
+    evolution_summary = {
+        "label": label,
+        "loop": loop,
+        "total_configurations": len(configs),
+        "valid_performance_records": len(perfs),
+        "merged_pairs": len(merged),
+        "services_updated": applied_count,
+        "timestamp": time.time(),
+        "updated_services": list(best.keys()) if best else []
+    }
+    
+    summary_file = PATH + f"/output/{label}/{label}_{loop}_evolution_summary.json"
+    with open(summary_file, 'w') as f:
+        json.dump(evolution_summary, f, indent=2)
+    
+    print(f"Evolution summary saved to: {summary_file}")
+    
+    # Print detailed summary
+    print_evolution_summary(evolution_summary, best)
+    
     return best
+
+def print_evolution_summary(summary, best_configs):
+    """
+    Print a detailed summary of the evolution results.
+    """
+    print(f"\n{'='*60}")
+    print(f"EVOLUTION SUMMARY - {summary['label']} (Loop {summary['loop']})")
+    print(f"{'='*60}")
+    print(f"Total configurations analyzed: {summary['total_configurations']}")
+    print(f"Valid performance records: {summary['valid_performance_records']}")
+    print(f"Configuration-performance pairs: {summary['merged_pairs']}")
+    print(f"Services updated: {summary['services_updated']}")
+    print(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(summary['timestamp']))}")
+    
+    if best_configs:
+        print(f"\nUpdated Services:")
+        for service_name, (anomaly_id, configs, performance) in best_configs.items():
+            print(f"  • {service_name} (anomaly_id: {anomaly_id})")
+            print(f"    - Anomalies: {performance.get('total_anomaly_count', 'N/A')}")
+            print(f"    - Errors: {performance.get('total_errors', 'N/A')}")
+            print(f"    - P99 Latency: {performance.get('p99', 'N/A')}ms")
+            print(f"    - Throughput: {performance.get('max_throughput', 'N/A')} req/s")
+    else:
+        print(f"\nNo services were updated.")
+    
+    print(f"{'='*60}")
+
+def is_better_performance(new_perf, old_perf):
+    """
+    Compare two performance records and return True if new_perf is better than old_perf.
+    Uses a weighted scoring system to evaluate overall performance.
+    """
+    # Define weights for different performance metrics (higher weight = more important)
+    weights = {
+        'total_anomaly_count': 10.0,
+        'changed_service_anomaly_count': 8.0,
+        'total_errors': 6.0,
+        'p99': 5.0,
+        'p50': 4.0,
+        'max_throughput': 3.0,
+        'service_max_cpu_usage': 2.0,
+        'total_max_cpu_usage': 1.0,
+    }
+    
+    def calculate_score(perf):
+        score = 0.0
+        for metric, weight in weights.items():
+            value = clean_float(perf.get(metric, 0))
+            if metric == 'max_throughput':
+                # Higher throughput is better, so we add it positively
+                score += value * weight
+            else:
+                # Lower values are better for other metrics, so we subtract
+                score -= value * weight
+        return score
+    
+    new_score = calculate_score(new_perf)
+    old_score = calculate_score(old_perf)
+    
+    return new_score > old_score
 
 @report_time
 def main():
-    LABEL ="keep"
+    LABEL ="naturally"
     
     os.makedirs(PATH + f"/output/{LABEL}", exist_ok=True)
     if(glob.glob(PATH + f"/output/{LABEL}/config/*.yaml") == []):
@@ -481,16 +685,15 @@ def main():
         print(f"########################### Loop: {i} ###########################")
 
         print("Load test to analyse present anomalies in the current configuration")
-        # client = get_k8s_api_client()
-        # reset_k8s(client, PATH + f"/output/{LABEL}/config")
-        # locust_load_test(label=f"{LABEL}_{i}", base_label=LABEL, loop=i)
+        client = get_k8s_api_client()
+        reset_k8s(client, PATH + f"/output/{LABEL}/config")
+        locust_load_test(label=f"{LABEL}_{i}", base_label=LABEL, loop=i)
 
         print("Generate possible changes to mitigate then Apply and measure the changes")
         generate_and_measure(LABEL, i)
 
-        # print("select the configurations that have performed the best and evolve")
-        # evolve(LABEL, i)
+        print("Select the configurations that have performed the best and evolve")
+        evolve(LABEL, i)
 
 if __name__=="__main__":
     main()
-

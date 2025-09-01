@@ -18,6 +18,10 @@ from config import PATH, SPAN_PROCESS_MAP
 def read_history(label, base_label):
     history_df = pd.read_csv(PATH + f"/output/{base_label}/data/{label}/" + f'{label}_stats_history.csv')
     history_df["Timestamp"] = pd.to_datetime(history_df['Timestamp'], unit='s')
+    
+    # Remove the "Name" column which contains "Aggregated" string values
+    if "Name" in history_df.columns:
+        history_df = history_df.drop(columns=["Name"])
 
     return history_df
 
@@ -91,8 +95,18 @@ def get_kpi_list(label: str, base_label: str, service) -> List:
     trace_df = read_traces(label, base_label)
     metric_dfs = read_metrics(label, base_label)
 
+    # Fill NaN values with the maximum value of each column
+    for column in history_df.columns:
+        if column != "Timestamp":  # Skip timestamp column
+            mean_value = history_df[column].mean()
+            if pd.notna(mean_value):  # Only fill if max value is not NaN
+                history_df[column] = history_df[column].fillna(mean_value)
+            else:
+                # If all values in column are NaN, fill with 0
+                history_df[column] = history_df[column].fillna(0)
+
     for key, m_df in metric_dfs.items():
-        m_df.fillna(0, inplace=True)
+        m_df = m_df.fillna(0)
 
     # IMPROVEMENT: improve pipeline with the ELBD framework. will look good in the paper.
     # IMPROVEMENT: also perform outlier detection on the monitoring metrics.
@@ -119,26 +133,60 @@ def get_kpi_list(label: str, base_label: str, service) -> List:
             if names[v[0]] in ['mongo_rate']:
                 continue
 
-            service_name = os.path.basename(SPAN_PROCESS_MAP[names[v[0]]])[:-5] 
+            service_name = os.path.basename(SPAN_PROCESS_MAP[names[v[0]]])
             service_anomaly_count[service_name] = service_anomaly_count.get(service_name, 0) + 1
 
             break
 
-    service_max_cpu_usage = max(metric_dfs.get(service, {}).get(f"{service}_container_cpu_usage_seconds_total", [-1]))
+    # Helper function to safely get numeric max value
+    def safe_numeric_max(series, default=0.0):
+        """Safely get the maximum numeric value from a series, handling non-numeric data"""
+        try:
+            # Convert to numeric, coercing errors to NaN
+            numeric_series = pd.to_numeric(series, errors='coerce')
+            # Drop NaN values and get max
+            max_val = numeric_series.dropna().max()
+            return max_val if pd.notna(max_val) else default
+        except Exception as e:
+            print(f"Warning: Could not calculate max for series: {e}")
+            return default
+
+    # Helper function to safely get numeric mean value
+    def safe_numeric_mean(series, default=0.0):
+        """Safely get the mean numeric value from a series, handling non-numeric data"""
+        try:
+            # Convert to numeric, coercing errors to NaN
+            numeric_series = pd.to_numeric(series, errors='coerce')
+            # Drop NaN values and get mean
+            mean_val = numeric_series.dropna().mean()
+            return mean_val if pd.notna(mean_val) else default
+        except Exception as e:
+            print(f"Warning: Could not calculate mean for series: {e}")
+            return default
+
+    # Safely calculate service max CPU usage
+    service_cpu_series = metric_dfs.get(service, {}).get(f"{service}_container_cpu_usage_seconds_total", pd.Series([0]))
+    service_max_cpu_usage = safe_numeric_max(service_cpu_series, default=0.0)
     
+    # Safely calculate total max CPU usage
     total_max_cpu_usage = 0.0
     for k_service, m_df in metric_dfs.items():
-        total_max_cpu_usage = total_max_cpu_usage + max(m_df.get(f"{k_service}_container_cpu_usage_seconds_total",[0]))
+        cpu_series = m_df.get(f"{k_service}_container_cpu_usage_seconds_total", pd.Series([0]))
+        total_max_cpu_usage += safe_numeric_max(cpu_series, default=0.0)
 
+    print("changed_service_anomaly_count", service_anomaly_count.get(service, "not found"))
+    print(service_anomaly_count)
+
+    # Safely calculate KPI values
     kpi = {
-        "max_throughput": max(history_df["Requests/s"]),
-        "total_errors" : max(history_df["Total Failure Count"]),
+        "max_throughput": safe_numeric_max(history_df["Requests/s"], default=0.0),
+        "total_errors": safe_numeric_max(history_df["Total Failure Count"], default=0.0),
         "total_anomaly_count": sum(service_anomaly_count.values()),
         "changed_service_anomaly_count": service_anomaly_count.get(service, 0),
         "service_max_cpu_usage": service_max_cpu_usage,
         "total_max_cpu_usage": total_max_cpu_usage,
-        "p99": sum(history_df["99%"])/len(history_df),
-        "p50": sum(history_df["50%"])/len(history_df),
+        "p99": safe_numeric_mean(history_df["99%"], default=0.0),
+        "p50": safe_numeric_mean(history_df["50%"], default=0.0),
     }
 
     return kpi

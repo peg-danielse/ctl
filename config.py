@@ -1,4 +1,9 @@
 
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 PATH = "."
 
 KUBE_URL = "https://localhost:6443" 

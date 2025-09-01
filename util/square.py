@@ -10,6 +10,7 @@ warnings.filterwarnings('ignore', message="Unverified HTTPS request*")
 
 from config import PATH, KUBE_URL, KUBE_API_TOKEN
 from .sequence import get_config_content
+from ctl import load_yaml_as_dict
 
 def update_globals(update, api_client):
     try:
@@ -118,9 +119,12 @@ def apply_yaml_configuration(doc, api_client):
 def reset_k8s(api_client, path = PATH + "/base_config"):
     files = glob.glob(path + "/*.yaml")
     for f in files:
-        s, c, p = get_config_content(f)[-1]
+        config = load_yaml_as_dict(f)
         
-        apply_yaml_configuration(c, api_client)
+        if config is not None:
+            apply_yaml_configuration(config, api_client)
+        else:
+            print(f"Warning: Could not load configuration from {f}")
 
     print("waiting to fully accept initial configuration...")
     time.sleep(60)
