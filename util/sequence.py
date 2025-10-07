@@ -10,10 +10,10 @@ from config import PATH
 
 def get_existing_seq(file_path):
     if not os.path.exists(file_path):
-        return set([0])
+        return set()
     with open(file_path) as f:
         content = f.read()
-    return map(int,set(re.findall(r"# --- START: seq=(.+?) ---", content)))
+    return set(map(int, re.findall(r"# --- START: seq=(.+?) ---", content)))
 
 
 def append_generation(file_path, seq, content):

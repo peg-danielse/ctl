@@ -10,7 +10,7 @@ warnings.filterwarnings('ignore', message="Unverified HTTPS request*")
 
 from config import PATH, KUBE_URL, KUBE_API_TOKEN
 from .sequence import get_config_content
-from ctl import load_yaml_as_dict
+from .config_manager import load_yaml_as_dict
 
 def update_globals(update, api_client):
     try:
@@ -136,6 +136,11 @@ def get_k8s_api_client():
     aConfiguration = client.Configuration()
     aConfiguration.host = KUBE_URL
     aConfiguration.verify_ssl = False
+    
+    # Check if KUBE_API_TOKEN is available
+    if KUBE_API_TOKEN is None:
+        raise ValueError("KUBE_API_TOKEN environment variable is not set. Please set it to your Kubernetes API token.")
+    
     aConfiguration.api_key = {"authorization": "Bearer " + KUBE_API_TOKEN}
 
     return client.ApiClient(aConfiguration)

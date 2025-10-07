@@ -22,9 +22,7 @@ from locust import events
 from locust.runners import MasterRunner
 
 from weibull import get_n_weibull_variables, compute_weibull_scale
-
-JAEGER_ENDPOINT_FSTRING = "http://145.100.135.11:30550/api/traces?limit={limit}&lookback={lookback}&service={service}&start={start}"
-PROMETHEUS_BASE_URL = "http://145.100.135.11:31207"
+from util.monitoring import collect_monitoring_data_for_test
 
 PATH = "./locust/"
 log_file=""
@@ -42,6 +40,8 @@ def on_test_stop(environment, **_kwargs):
     print("start", start, "end", end)
 
     label = environment.parsed_options.csv_prefix
+    
+    # Consolidate response time logs
     total_file = f"./{label}_responce_log.csv"
     csv_log_files = glob.glob("./.response_times_*.csv")
     
@@ -51,106 +51,16 @@ def on_test_stop(environment, **_kwargs):
             with open(log_name, 'r') as in_f:
                 f.write(in_f.read())
 
-
-    url = PROMETHEUS_BASE_URL + '/api/v1/label/configuration_name/values'
-    response = requests.get(url)
-
-
-    data = response.json()
-    print(data)
+    # Collect monitoring data using the new monitoring module
+    print("Collecting monitoring data...")
+    monitoring_data = collect_monitoring_data_for_test(
+        start_time=start,
+        end_time=end,
+        run_time_seconds=environment.parsed_options.run_time,
+        label=label
+    )
     
-    total_m_df = None
-    for c in data['data']:
-        url = PROMETHEUS_BASE_URL + '/api/v1/label/revision_name/values'
-        
-        # get the names
-        params = {'match[]': f'autoscaler_desired_pods{{namespace_name="default",configuration_name="{c}"}}'}
-
-        response = requests.get(url, params=params)
-
-        revision = response.json()
-        print("Revision name:", revision['data'])
-
-        url = PROMETHEUS_BASE_URL + '/api/v1/query_range'
-
-        # Autoscaler metrics
-        query = ['sum(autoscaler_requested_pods{{namespace_name="default", configuration_name="{config}", revision_name="{revision}"}})',
-                'sum(autoscaler_terminating_pods{{namespace_name="default", configuration_name="{config}", revision_name="{revision}"}})',
-                'sum(autoscaler_actual_pods{{namespace_name="default", configuration_name="{config}", revision_name="{revision}"}})',
-                'sum(activator_request_concurrency{{namespace_name="default", configuration_name="{config}", revision_name="{revision}"}})',
-                'sum(autoscaler_desired_pods{{namespace_name="default", configuration_name="{config}", revision_name="{revision}"}})',
-                'sum(autoscaler_stable_request_concurrency{{namespace_name="default", configuration_name="{config}", revision_name="{revision}"}})',
-                'sum(autoscaler_panic_request_concurrency{{namespace_name="default", configuration_name="{config}", revision_name="{revision}"}})',
-                'sum(autoscaler_target_concurrency_per_pod{{namespace_name="default", configuration_name="{config}", revision_name="{revision}"}})',
-                'sum(autoscaler_excess_burst_capacity{{namespace_name="default", configuration_name="{config}", revision_name="{revision}"}})',
-                'sum(rate(container_cpu_usage_seconds_total{{namespace="default", pod=~"{revision}.*", container != "POD", container != ""}}[1m])) by (container)']
-    
-        metric_df = None
-        for q in query:
-            fvalues = {"config": c, "revision": revision['data'][-1]}
-            params = {'query': q.format_map(fvalues),
-                    'start': start.isoformat() + 'Z',
-                    'end': end.isoformat() + 'Z',
-                    'step': '5s' } # str(math.ceil(int(end.timestamp()) - int(start.timestamp())) / 1000) } # from ceil((end - start) / 1000) 
-
-            response = requests.get(url, params=params)
-            result = response.json()
-
-            print(result)
-
-            match = re.search(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\{\{', q)
-            metric_name = q
-            
-            if match:
-                metric_name = match.group(1)
-            
-            # if the data collection gets no values for a revision.
-            try:
-                result_data = {"index":[], f"{c}_{metric_name}":[]}
-
-                print(result)
-
-                for e in result['data']['result'][0]["values"]:
-                    result_data['index'].append(int(e[0]))
-                    result_data[f"{c}_{metric_name}"].append(float(e[1]))
-            except Exception as e:
-                print(e)
-                continue
-
-            result_df = pd.DataFrame(result_data)
-            
-            if total_m_df is None:
-                metric_df = result_df
-                total_m_df = result_df
-                continue
-
-            if metric_df is None:
-                metric_df = result_df
-                continue 
-
-            metric_df = pd.merge(metric_df, result_df, on='index', how='outer')
-            total_m_df = pd.merge(metric_df, result_df, on='index', how='outer')
-        
-        metric_df.to_csv(f"{label}_{c}_metrics.csv")
-    total_m_df.to_csv(f"{label}_total_metrics.csv")
-
-
-    # get the traces from jaeger save and rename file.
-    url = JAEGER_ENDPOINT_FSTRING.format(limit=str(4000), 
-                                            lookback=str(environment.parsed_options.run_time) , 
-                                            service="frontend", 
-                                            start=int((time.mktime(time.localtime()) - environment.parsed_options.run_time) * 1_000_000))
-
-    print(url)
-
-    data = requests.get(url).json()
-
-    with io.open(f'./{label}_traces.json', 'w', encoding='utf8') as outfile:
-        json.dump(data, outfile,
-                indent=4, sort_keys=True,
-                separators=(',', ': '), ensure_ascii=False)
-
-    
+    print("Monitoring data collection completed")
     return
 
 @events.quitting.add_listener
