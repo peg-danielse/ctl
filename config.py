@@ -9,12 +9,15 @@ PATH = "."
 KUBE_URL = "https://localhost:6443" 
 KUBE_API_TOKEN = os.getenv("KUBE_API_TOKEN")
 
-GEN_API_URL = "http://localhost:4242/generate"
 
+GEN_API_URL = "http://localhost:4242/generate"
 # OpenAI Configuration
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
 OPENAI_MODEL = "gpt-4o-mini"  # GPT-5-mini has issues with content generation, using GPT-4o-mini
+
+# Gemini Configuration
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = "gemini-2.5-flash"  # Fast and cost-effective model
 
 SPAN_PROCESS_MAP = {'HTTP GET /hotels': 'frontend-deployment',
 'HTTP GET /recommendations': 'frontend-deployment',

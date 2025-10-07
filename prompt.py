@@ -1,11 +1,10 @@
-GENERATE_PROMPT = '''
-{knowledge_yaml}
+GOAL = "Analyse the monitoring data and provide a revised configuration that aims to resolve the anomaly, respecting the constraints and using horizontal and vertical scaling using the provided keys and values"
 
+GENERATE_PROMPT = '''
 anomaly_report:
   service: {service_name}
   revision: {revision_name}
-  timestamp: 2025-08-05T12:13:00Z
-
+  
   anomaly_type: {anomaly_type}
   duration: {duration}
 
@@ -21,12 +20,16 @@ global configuration:
 ```yaml
 {auto_config}
 ```
-
-request: |
-  Provide a revised configuration that aims to resolve the latency anomaly while respecting the above constraints using both horizontal and vertical scaling using the provided keys and values.
-
 '''
 
+RESULT_PROMPT = '''the configuration produced the performance indicators: \n
+json``` \n
+{result} \n
+```
+'''
+
+
+# WIP
 CHECK_PROMPT = '''
 You are a Kubernetes autoscaling expert. Your job is to tune Knative autoscaler configurations in response to performance anomalies. The following context includes:
 
@@ -42,9 +45,9 @@ Anomaly:
   metrics_snapshot:
     {snapshot}
 
-applied config:
-  {service_config}
-  {auto_config}
+  applied config:
+    {service_config}
+    {auto_config}
 
 result_snapshot:
   {config_performance}
@@ -54,6 +57,7 @@ result_snapshot:
 Was this configuration change effective? If not, suggest a new configuration with brief reasoning. Otherwise, explain why it worked.
 '''
 
+# WIP
 FILE_PROMPT = '''give one short and concise reasoning then answer with the corrected yaml file to mitigate the anomaly: \n
 <yaml> \n
 {service_file} \n
@@ -61,7 +65,4 @@ FILE_PROMPT = '''give one short and concise reasoning then answer with the corre
 {global_file} \n
 </yaml>'''
 
-RESULT_PROMPT = '''the configuration produced the performance indicators: \n
-<json> \n
-{performance} \n
-<json>'''
+

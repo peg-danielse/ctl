@@ -1,4 +1,6 @@
-import sys, os, json, glob, re, requests, time, subprocess, heapq, yaml, shutil
+import sys, json, glob, re, os
+import logging
+import traceback
 
 import numpy as np
 import pandas as pd
@@ -6,13 +8,12 @@ import pandas as pd
 import shap
 from sklearn.ensemble import IsolationForest
 
-from typing import List, Tuple
+from datetime import datetime, timezone
 
-from datetime import datetime
-from functools import wraps
-from operator import itemgetter
+from config import PATH
 
-from config import PATH, SPAN_PROCESS_MAP
+# Configure logging
+logger = logging.getLogger(__name__)
 
 # read stat history
 def read_history(label, base_label):
@@ -32,9 +33,9 @@ def read_response(label, base_label):
     return resp_df
 
 # read Jaeger trace data
-def read_traces(label, base_label):
+def read_traces(path):
     data = {}
-    with open(PATH + f"/output/{base_label}/data/{label}/" + f'{label}_traces.json', 'r') as file:
+    with open(path, 'r') as file:
         data = json.load(file)
 
     rows = []
@@ -72,7 +73,7 @@ def read_metrics(label, base_label):
         if match:
             name=match.group()
         else:
-            print("unregognized file:", n, "skipping")
+            # logger.warning(f"unrecognized file: {n}, skipping")
             continue
 
         metric_df = pd.read_csv(n, index_col=False).drop('Unnamed: 0', axis=1)
@@ -83,186 +84,37 @@ def read_metrics(label, base_label):
     
     return metrics
 
-def shap_decisions(iso_forest, features, mark = "_"):
+
+def shap_decisions(iso_forest, features):
     # try to explain a specific data points. as a short cut for RCA.
     shap_values = shap.TreeExplainer(iso_forest).shap_values(features)
 
     return shap_values, features.columns.tolist()
 
-def get_kpi_list(label: str, base_label: str, service) -> List:
-    """
-    Get KPI list without using history_df. Uses trace data and metrics instead.
-    """
-    from util.monitoring import calculate_latency_metrics_from_traces
+def metric_snapshot(trace_df, metric_dfs, phase=None, subphase=None):
+    # Create a metric snapshot for a specific service and time period.
+    timestamp = datetime.now().astimezone(timezone.utc)
     
-    responce_df = read_response(label, base_label)
-    trace_df = read_traces(label, base_label)
-    metric_dfs = read_metrics(label, base_label)
-
-    # Fill NaN values in metrics
-    for key, m_df in metric_dfs.items():
-        m_df = m_df.fillna(0)
-
-    # IMPROVEMENT: improve pipeline with the ELBD framework. will look good in the paper.
-    # IMPROVEMENT: also perform outlier detection on the monitoring metrics.
-
-    # Find outliers in the traces using an IsolationForest classifier.
-    features = trace_df.select_dtypes(include=["number"]).drop(columns=["total"])
-    iso_forest = IsolationForest(contamination="auto", random_state=42)
-    trace_df["anomaly"] = iso_forest.fit_predict(features)
-
-    # IMPROVEMENT: decision plot the shap values by clustering similar shap values...
-    anomaly_indices = trace_df[(trace_df['anomaly'] == -1)].index.to_list()
-    anom_features = features.iloc[anomaly_indices]
-    shapes, names = shap_decisions(iso_forest, anom_features)
-
-    service_anomaly_count = {}
-    for s, ai in zip(shapes, anomaly_indices):
-        duration = pd.to_timedelta(trace_df["total"][ai], unit="us")
-
-        if duration < pd.Timedelta(seconds=2):
-            continue
-
-        values = heapq.nsmallest(2, enumerate(s), key=itemgetter(1))
-        for v in values:
-            if names[v[0]] in ['mongo_rate']:
-                continue
-
-            service_name = os.path.basename(SPAN_PROCESS_MAP[names[v[0]]])
-            service_anomaly_count[service_name] = service_anomaly_count.get(service_name, 0) + 1
-
-            break
-
-    # Helper function to safely get numeric max value
-    def safe_numeric_max(series, default=0.0):
-        """Safely get the maximum numeric value from a series, handling non-numeric data"""
-        try:
-            # Convert to numeric, coercing errors to NaN
-            numeric_series = pd.to_numeric(series, errors='coerce')
-            # Drop NaN values and get max
-            max_val = numeric_series.dropna().max()
-            return max_val if pd.notna(max_val) else default
-        except Exception as e:
-            print(f"Warning: Could not calculate max for series: {e}")
-            return default
-
-    # Helper function to safely get numeric mean value
-    def safe_numeric_mean(series, default=0.0):
-        """Safely get the mean numeric value from a series, handling non-numeric data"""
-        try:
-            # Convert to numeric, coercing errors to NaN
-            numeric_series = pd.to_numeric(series, errors='coerce')
-            # Drop NaN values and get mean
-            mean_val = numeric_series.dropna().mean()
-            return mean_val if pd.notna(mean_val) else default
-        except Exception as e:
-            print(f"Warning: Could not calculate mean for series: {e}")
-            return default
-
-    # Safely calculate service max CPU usage
-    service_cpu_series = metric_dfs.get(service, {}).get(f"{service}_container_cpu_usage_seconds_total", pd.Series([0]))
-    service_max_cpu_usage = safe_numeric_max(service_cpu_series, default=0.0)
-    
-    # Safely calculate total max CPU usage
-    total_max_cpu_usage = 0.0
-    for k_service, m_df in metric_dfs.items():
-        cpu_series = m_df.get(f"{k_service}_container_cpu_usage_seconds_total", pd.Series([0]))
-        total_max_cpu_usage += safe_numeric_max(cpu_series, default=0.0)
-
-    print("changed_service_anomaly_count", service_anomaly_count.get(service, "not found"))
-    print(service_anomaly_count)
-
-    # Calculate latency metrics from trace data (replaces history_df)
-    latency_metrics = calculate_latency_metrics_from_traces(trace_df)
-
-    # Safely calculate KPI values using trace data instead of history_df
-    kpi = {
-        "max_throughput": latency_metrics["max_throughput"],
-        "total_errors": latency_metrics["total_errors"],
-        "total_anomaly_count": sum(service_anomaly_count.values()),
-        "changed_service_anomaly_count": service_anomaly_count.get(service, 0),
-        "service_max_cpu_usage": service_max_cpu_usage,
-        "total_max_cpu_usage": total_max_cpu_usage,
-        "p99": latency_metrics["p99"],
-        "p50": latency_metrics["p50"],
-    }
-
-    return kpi
-
-
-def metric_snapshot(service_name, trace_df, metric_dfs, phase=None, subphase=None):
-    """
-    Create a metric snapshot for a specific service and time period.
-    
-    Args:
-        service_name: Name of the service
-        trace_df: Trace data DataFrame
-        metric_dfs: Dictionary of metric DataFrames
-        anomaly_index: Index of the anomaly (optional)
-        anomalies: List of anomalies (optional)
-        knobs: Configuration knobs (optional)
-        phase: Current phase (baseline, adaptation, etc.) (optional)
-        subphase: Current subphase (configuration_application, stabilization, etc.) (optional)
-        
-    Returns:
-        tuple: (timestamp, duration, snapshot_dict)
-    """
-    timestamp = datetime.utcnow()
-    
-    # Calculate basic metrics from trace data
-    if not trace_df.empty:
-        # Calculate response time metrics
-        if 'total' in trace_df.columns:
-            response_times = pd.to_numeric(trace_df['total'], errors='coerce')
-            duration = response_times.mean() if not response_times.empty else 0
-        else:
-            duration = 0
-        
-        # Count requests and errors
+    try:
+        response_times = pd.to_numeric(trace_df['total'], errors='coerce')
+        duration = response_times.mean() if not response_times.empty else 0
         total_requests = len(trace_df)
-        error_count = len(trace_df[trace_df.get('error', False) == True]) if 'error' in trace_df.columns else 0
-        error_rate = (error_count / total_requests * 100) if total_requests > 0 else 0
-    else:
+
+    except Exception as e:
+        logger.error(f"Error in snapshot: {e}")
         duration = 0
         total_requests = 0
-        error_count = 0
-        
-    # Get service-specific metrics
-    service_metrics = {}
-    if service_name in metric_dfs:
-        service_data = metric_dfs[service_name]
-        
-        # Handle both DataFrame and dict formats
-        if hasattr(service_data, 'columns'):
-            # DataFrame format
-            for col in service_data.columns:
-                if 'cpu' in col.lower():
-                    service_metrics['cpu_usage'] = service_data[col].mean() if not service_data[col].empty else 0
-                elif 'memory' in col.lower():
-                    service_metrics['memory_usage'] = service_data[col].mean() if not service_data[col].empty else 0
-        elif isinstance(service_data, dict):
-            # Dictionary format - extract available metrics
-            for key, value in service_data.items():
-                if 'cpu' in key.lower():
-                    service_metrics['cpu_usage'] = value if isinstance(value, (int, float)) else 0
-                elif 'memory' in key.lower():
-                    service_metrics['memory_usage'] = value if isinstance(value, (int, float)) else 0
+
+        return {"error": str(e)}
     
     # Calculate per-pattern deadline miss rates
     pattern_miss_rates = calculate_pattern_miss_rates(trace_df)
+    overall_miss_rate = sum([e['miss_rate'] for e in pattern_miss_rates.values()]) / len(pattern_miss_rates)
     
     # Perform SHAP anomaly detection
-    shap_results = perform_shap_anomaly_detection(trace_df)
+    anomaly_results = perform_shap_anomaly_detection(trace_df)
     
     # Calculate overall pattern stats using 65th percentile (same as individual patterns)
-    overall_miss_rate = 0
-    overall_miss_count = 0
-    if not trace_df.empty and 'total' in trace_df.columns:
-        overall_response_times = pd.to_numeric(trace_df['total'], errors='coerce')
-        if not overall_response_times.empty:
-            overall_p65_threshold = overall_response_times.quantile(0.65)
-            overall_miss_count = len(overall_response_times[overall_response_times > overall_p65_threshold])
-            overall_miss_rate = (overall_miss_count / len(overall_response_times) * 100)
     
     # Calculate additional metrics
     p90_response_time = 0
@@ -274,6 +126,7 @@ def metric_snapshot(service_name, trace_df, metric_dfs, phase=None, subphase=Non
     # Calculate overall CPU utilization from service metrics
     overall_cpu_utilization = 0
     cpu_values = []
+    
     for service_name in metric_dfs.keys():
         if service_name in metric_dfs:
             service_data = metric_dfs[service_name]
@@ -285,10 +138,10 @@ def metric_snapshot(service_name, trace_df, metric_dfs, phase=None, subphase=Non
                             cpu_values.append(cpu_val)
     
     if cpu_values:
-        overall_cpu_utilization = sum(cpu_values) / len(cpu_values)
+        overall_cpu_utilization = sum(cpu_values)
     
     # Calculate anomaly rate
-    anomaly_rate = (shap_results['anomaly_count'] / total_requests * 100) if total_requests > 0 else 0
+    anomaly_rate = (anomaly_results['anomaly_count'] / total_requests * 100) if total_requests > 0 else 0
     
     # Restructure snapshot data according to the specified format
     snapshot = {
@@ -298,8 +151,8 @@ def metric_snapshot(service_name, trace_df, metric_dfs, phase=None, subphase=Non
         'p90_response_time': p90_response_time,
         'deadline_miss_rate': overall_miss_rate,
         'patterns': {},
-        'cpu_utilization': overall_cpu_utilization,
-        'anomaly_count': shap_results['anomaly_count'],
+        'sum_cpu_utilization': overall_cpu_utilization,
+        'anomaly_count': anomaly_results['anomaly_count'],
         'anomaly_rate': anomaly_rate,
         'services': {},
         'phase': phase,
@@ -337,7 +190,7 @@ def metric_snapshot(service_name, trace_df, metric_dfs, phase=None, subphase=Non
                         break
             
             # Get anomaly information for this service from SHAP results
-            service_anomalies = shap_results['anomalies_by_service'].get(service_name, [])
+            service_anomalies = anomaly_results['anomalies_by_service'].get(service_name, [])
             service_anomaly_count = len(service_anomalies)
             service_anomaly_rate = (service_anomaly_count / total_requests * 100) if total_requests > 0 else 0
             
@@ -347,43 +200,22 @@ def metric_snapshot(service_name, trace_df, metric_dfs, phase=None, subphase=Non
                 'cpu_utilization': service_cpu_utilization
             }
     
-    return timestamp, duration, snapshot
-
+    return snapshot, anomaly_results
 
 def calculate_pattern_miss_rates(trace_df):
-    """
-    Calculate deadline miss rates for each trace pattern using 65th percentile as threshold.
-    
-    Args:
-        trace_df: DataFrame with trace data including 'pattern' and 'total' columns
-        
-    Returns:
-        dict: Pattern miss rates with pattern as key and miss rate as value
-    """
     if trace_df is None or trace_df.empty or 'pattern' not in trace_df.columns or 'total' not in trace_df.columns:
+        logger.error("Error in calculate_pattern_miss_rates: trace_df is None or empty or 'pattern' or 'total' not in trace_df.columns")
         return {}
     
     pattern_miss_rates = {}
     
     # Group by pattern and calculate miss rates
     for pattern in trace_df['pattern'].unique():
-        if pd.isna(pattern) or pattern == '':
-            continue
-            
         pattern_traces = trace_df[trace_df['pattern'] == pattern]
-        if pattern_traces.empty:
-            continue
-            
         response_times = pd.to_numeric(pattern_traces['total'], errors='coerce')
-        if response_times.empty:
-            continue
-            
-        # Skip patterns with fewer than 30 traces for reliable statistical analysis
-        if len(response_times) < 30:
-            continue
             
         # Calculate 65th percentile as deadline threshold for this pattern
-        p65_threshold = response_times.quantile(0.65)
+        p65_threshold = get_pattern_miss_rate_threshold(pattern)
         
         # Count requests above the 65th percentile
         deadline_misses = len(response_times[response_times > p65_threshold])
@@ -402,16 +234,8 @@ def calculate_pattern_miss_rates(trace_df):
 
 
 def perform_shap_anomaly_detection(trace_df):
-    """
-    Perform SHAP-based anomaly detection on trace data and sort by service.
-    Uses the same attribution method as get_kpi_list for consistency.
-    
-    Args:
-        trace_df: DataFrame with trace data
-        
-    Returns:
-        dict: SHAP anomaly detection results sorted by service
-    """
+
+    trace_df.reset_index()
     if trace_df is None or trace_df.empty:
         return {
             'anomaly_count': 0,
@@ -420,11 +244,8 @@ def perform_shap_anomaly_detection(trace_df):
         }
     
     try:
-        from sklearn.ensemble import IsolationForest
-        import shap
         import heapq
         from operator import itemgetter
-        import os
         from config import SPAN_PROCESS_MAP
         
         # Prepare features for anomaly detection (exclude non-numeric columns)
@@ -440,15 +261,23 @@ def perform_shap_anomaly_detection(trace_df):
                 'shap_contributions': {}
             }
         
-        features = trace_df[feature_columns]
+        features = trace_df[feature_columns].copy()
         
         # Fit Isolation Forest
-        iso_forest = IsolationForest(contamination="auto", random_state=42)
-        anomaly_predictions = iso_forest.fit_predict(features)
+        iso_forest, training_features = get_trace_IsolationForest()
         
+        # Ensure all training features are present and in the same order
+        for col in training_features:
+            if col not in features:
+                features[col] = 0
+        
+        # Reorder features to match training order
+        features = features[training_features]
+        
+        anomaly_predictions = iso_forest.predict(features)
+        trace_df.reset_index()
         # Find anomalies
         anomaly_indices = trace_df[anomaly_predictions == -1].index.tolist()
-        
         if not anomaly_indices:
             return {
                 'anomaly_count': 0,
@@ -457,7 +286,10 @@ def perform_shap_anomaly_detection(trace_df):
             }
         
         # Use the same SHAP calculation method as get_kpi_list
-        anom_features = features.iloc[anomaly_indices]
+        # Use label-based indexing to avoid positional out-of-bounds errors
+        # print(anomaly_indices)
+        # print(features)
+        anom_features = features.loc[anomaly_indices]
         shapes, names = shap_decisions(iso_forest, anom_features)
         
         # Process anomalies using the same attribution logic as get_kpi_list
@@ -467,7 +299,8 @@ def perform_shap_anomaly_detection(trace_df):
         
         for s, ai in zip(shapes, anomaly_indices):
             # Get duration and skip anomalies with duration < 2 seconds (same as get_kpi_list)
-            duration = pd.to_timedelta(trace_df["total"][ai], unit="us")
+            duration = pd.to_timedelta(trace_df.loc[ai, "total"], unit="us")
+            timestamp = trace_df.loc[ai, "startTime"]
             
             # Get the 2 most negative SHAP values (same as get_kpi_list)
             values = heapq.nsmallest(2, enumerate(s), key=itemgetter(1))
@@ -500,12 +333,13 @@ def perform_shap_anomaly_detection(trace_df):
             if primary_service is None:
                 continue
             
-            # Store anomaly information
+            # Store anomaly information 
             anomaly_info = {
                 'index': int(ai),
                 'trace_id': trace_df.loc[ai, 'id'] if 'id' in trace_df.columns else None,
                 'pattern': trace_df.loc[ai, 'pattern'] if 'pattern' in trace_df.columns else None,
                 'response_time': trace_df.loc[ai, 'total'] if 'total' in trace_df.columns else None,
+                'timestamp': timestamp,
                 'duration_seconds': duration.total_seconds(),
                 'service': primary_service
             }
@@ -544,9 +378,56 @@ def perform_shap_anomaly_detection(trace_df):
         }
         
     except Exception as e:
-        print(f"Error in SHAP anomaly detection: {e}")
+        # print(e)
+        print(traceback.format_exc())
+        logger.error(f"Error in SHAP anomaly detection: {e}")
         return {
             'anomaly_count': 0,
             'anomalies_by_service': {},
             'shap_contributions': {}
         }
+
+
+iso_forest = None
+iso_forest_features = None
+def get_trace_IsolationForest() -> IsolationForest:
+    global iso_forest, iso_forest_features
+    if iso_forest is not None:
+        return iso_forest, iso_forest_features
+    
+    trace_df = read_traces(PATH + "/anomaly_detection/training_traces.json")
+    feature_columns = trace_df.select_dtypes(include=["number"]).columns.tolist()
+    
+    if 'total' in feature_columns:
+        feature_columns.remove('total')
+    
+    iso_forest_features = feature_columns
+    features = trace_df[feature_columns]
+    _iso_forest = IsolationForest(contamination="auto", random_state=42)
+    _iso_forest.fit(features)
+
+    iso_forest = _iso_forest
+
+    return iso_forest, iso_forest_features
+
+
+pattern_miss_rate_thresholds = {}
+def get_pattern_miss_rate_threshold(pattern: str):
+    # global pattern_miss_rate_thresholds
+    # if pattern in pattern_miss_rate_thresholds:
+    #     return pattern_miss_rate_thresholds[pattern]
+
+    # trace_df = read_traces(PATH + "/anomaly_detection/training_traces.json")
+    # training_pattern_traces = trace_df[trace_df['pattern'] == pattern]
+
+    return 150000000 # fallback threshold
+    
+    # TODO: fix the pattern generation when loading the trace data.
+    # if training_pattern_traces.empty:
+    #     logger.warning(f"Training pattern traces are empty for pattern: {pattern}")
+    #     return 100000 # fallback threshold
+
+    training_response_times = pd.to_numeric(training_pattern_traces['total'], errors='coerce')
+    pattern_miss_rate_thresholds[pattern] = training_response_times.quantile(0.65)
+    
+    return pattern_miss_rate_thresholds[pattern]

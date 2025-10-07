@@ -1,4 +1,5 @@
 import sys, os, json, glob, re, requests, time, subprocess, heapq, yaml, shutil
+import logging
 
 from typing import List, Tuple
 
@@ -9,8 +10,16 @@ import warnings
 warnings.filterwarnings('ignore', message="Unverified HTTPS request*")
 
 from config import PATH, KUBE_URL, KUBE_API_TOKEN
-from .sequence import get_config_content
-from .config_manager import load_yaml_as_dict
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
+def load_yaml_as_dict(filepath: str):
+    with open(filepath, 'r') as f:
+        try:
+            return yaml.safe_load(f)
+        except Exception:
+            return None
 
 def update_globals(update, api_client):
     try:
@@ -26,7 +35,7 @@ def update_globals(update, api_client):
         # Replace the ConfigMap
         v1.replace_namespaced_config_map(name=name, namespace=namespace, body=update)
 
-        print(f"config '{name}' updated")
+        logger.info(f"config '{name}' updated")
 
         return True
     except Exception as e:
@@ -45,7 +54,7 @@ def update_deployment(update, api_client):
             body=update
         )
 
-        print(f"Deployment '{name}' updated")
+        logger.info(f"Deployment '{name}' updated")
 
         return 
     except Exception as e:
@@ -94,7 +103,7 @@ def update_knative_service(update, api_client):
         )
 
 
-        print(f"Service '{service_name}' updated")
+        logger.info(f"Service '{service_name}' updated")
 
         return True
 
@@ -111,7 +120,7 @@ def apply_yaml_configuration(doc, api_client):
         case "Deployment":
             update_deployment(doc, api_client)
         case _:
-            print(doc['kind'], " not supported")
+            logger.warning(f"{doc['kind']} not supported")
     
     return
 
@@ -124,10 +133,11 @@ def reset_k8s(api_client, path = PATH + "/base_config"):
         if config is not None:
             apply_yaml_configuration(config, api_client)
         else:
-            print(f"Warning: Could not load configuration from {f}")
+            logger.warning(f"Could not load configuration from {f}")
 
-    print("waiting to fully accept initial configuration...")
-    time.sleep(60)
+    logger.info("Waiting to fully accept initial configuration...")
+    time.sleep(2 * 60)
+    logger.info("done")
 
     return
 
