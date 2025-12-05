@@ -283,10 +283,8 @@ class Chat():
         # If prompt is empty, use a default message
         if not prompt:
             prompt = "Please provide a configuration recommendation."
-        
-        chat = self.previous_configurations + [["user", self.goal]] + [["user", prompt]]
-        # + ["user", self.knowledge]]
-        return chat
+            
+        return [["user", self.knowledge]] + self.previous_configurations + [["user", self.goal]] + [["user", prompt]] 
 
 class ChatManager():
     lock = threading.Lock()

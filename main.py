@@ -167,7 +167,7 @@ def loadtest(duration, label, phase):
         )
         
         # Wait for the process to complete
-        stdout, stderr = process.communicate(timeout=duration)  # 40 minutes timeout
+        stdout, stderr = process.communicate(timeout=duration) 
         
         # Save stdout and stderr to files
         os.makedirs(f"./output/{label}/data", exist_ok=True)
