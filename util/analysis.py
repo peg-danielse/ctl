@@ -109,7 +109,10 @@ def metric_snapshot(trace_df, metric_dfs, phase=None, subphase=None):
     
     # Calculate per-pattern deadline miss rates
     pattern_miss_rates = calculate_pattern_miss_rates(trace_df)
-    overall_miss_rate = sum([e['miss_rate'] for e in pattern_miss_rates.values()]) / len(pattern_miss_rates)
+    if pattern_miss_rates:
+        overall_miss_rate = sum(e['miss_rate'] for e in pattern_miss_rates.values()) / len(pattern_miss_rates)
+    else:
+        overall_miss_rate = 0
     
     # Perform SHAP anomaly detection
     anomaly_results = perform_shap_anomaly_detection(trace_df)
@@ -123,22 +126,31 @@ def metric_snapshot(trace_df, metric_dfs, phase=None, subphase=None):
         if not response_times.empty:
             p90_response_time = response_times.quantile(0.90)
     
-    # Calculate overall CPU utilization from service metrics
-    overall_cpu_utilization = 0
+    # Calculate overall CPU (cores) and memory (MB) utilization from service metrics
+    overall_cpu_utilization_cores = 0
+    overall_memory_utilization_mb = 0
     cpu_values = []
+    memory_values = []
     
     for service_name in metric_dfs.keys():
         if service_name in metric_dfs:
             service_data = metric_dfs[service_name]
             if hasattr(service_data, 'columns'):
                 for col in service_data.columns:
-                    if 'cpu' in col.lower():
+                    col_lower = col.lower()
+                    if 'cpu' in col_lower:
                         cpu_val = service_data[col].mean() if not service_data[col].empty else 0
                         if cpu_val > 0:
                             cpu_values.append(cpu_val)
+                    if 'memory' in col_lower:
+                        mem_val = service_data[col].mean() if not service_data[col].empty else 0
+                        if mem_val > 0:
+                            memory_values.append(mem_val)
     
     if cpu_values:
-        overall_cpu_utilization = sum(cpu_values)
+        overall_cpu_utilization_cores = sum(cpu_values)
+    if memory_values:
+        overall_memory_utilization_mb = sum(memory_values) / (1024 * 1024)
     
     # Calculate anomaly rate
     anomaly_rate = (anomaly_results['anomaly_count'] / total_requests * 100) if total_requests > 0 else 0
@@ -151,7 +163,8 @@ def metric_snapshot(trace_df, metric_dfs, phase=None, subphase=None):
         'p90_response_time': p90_response_time,
         'deadline_miss_rate': overall_miss_rate,
         'patterns': {},
-        'sum_cpu_utilization': overall_cpu_utilization,
+        'sum_cpu_utilization_cores': overall_cpu_utilization_cores,
+        'sum_memory_utilization_mb': overall_memory_utilization_mb,
         'anomaly_count': anomaly_results['anomaly_count'],
         'anomaly_rate': anomaly_rate,
         'services': {},
@@ -181,13 +194,17 @@ def metric_snapshot(trace_df, metric_dfs, phase=None, subphase=None):
         if service_name in metric_dfs:
             service_data = metric_dfs[service_name]
             
-            # Get CPU utilization for this service
-            service_cpu_utilization = 0
+            # Get CPU (cores) and memory (MB) utilization for this service
+            service_cpu_utilization_cores = 0
+            service_memory_utilization_mb = 0
             if hasattr(service_data, 'columns'):
                 for col in service_data.columns:
-                    if 'cpu' in col.lower():
-                        service_cpu_utilization = service_data[col].mean() if not service_data[col].empty else 0
-                        break
+                    col_lower = col.lower()
+                    if 'cpu' in col_lower and service_cpu_utilization_cores == 0:
+                        service_cpu_utilization_cores = service_data[col].mean() if not service_data[col].empty else 0
+                    if 'memory' in col_lower and service_memory_utilization_mb == 0:
+                        mem_val = service_data[col].mean() if not service_data[col].empty else 0
+                        service_memory_utilization_mb = mem_val / (1024 * 1024)
             
             # Get anomaly information for this service from SHAP results
             service_anomalies = anomaly_results['anomalies_by_service'].get(service_name, [])
@@ -197,7 +214,8 @@ def metric_snapshot(trace_df, metric_dfs, phase=None, subphase=None):
             snapshot['services'][service_name] = {
                 'anomaly_count': service_anomaly_count,
                 'anomaly_rate': service_anomaly_rate,
-                'cpu_utilization': service_cpu_utilization
+                'cpu_utilization_cores': service_cpu_utilization_cores,
+                'memory_utilization_mb': service_memory_utilization_mb
             }
     
     return snapshot, anomaly_results
@@ -214,11 +232,11 @@ def calculate_pattern_miss_rates(trace_df):
         pattern_traces = trace_df[trace_df['pattern'] == pattern]
         response_times = pd.to_numeric(pattern_traces['total'], errors='coerce')
             
-        # Calculate 65th percentile as deadline threshold for this pattern
-        p65_threshold = get_pattern_miss_rate_threshold(pattern)
+        # Calculate threshold as mean + 1.5 * std for this pattern
+        threshold = get_pattern_miss_rate_threshold(response_times)
         
-        # Count requests above the 65th percentile
-        deadline_misses = len(response_times[response_times > p65_threshold])
+        # Count requests above the threshold
+        deadline_misses = len(response_times[response_times > threshold])
         total_requests = len(response_times)
         miss_rate = (deadline_misses / total_requests * 100) if total_requests > 0 else 0
         
@@ -316,7 +334,7 @@ def perform_shap_anomaly_detection(trace_df):
                 # Skip certain features (same as get_kpi_list)
                 if feature_name in ['mongo_rate']:
                     continue
-                
+
                 # Map feature to service using SPAN_PROCESS_MAP and os.path.basename (same as get_kpi_list)
                 if feature_name in SPAN_PROCESS_MAP:
                     service_name = os.path.basename(SPAN_PROCESS_MAP[feature_name])
@@ -395,7 +413,16 @@ def get_trace_IsolationForest() -> IsolationForest:
     if iso_forest is not None:
         return iso_forest, iso_forest_features
     
-    trace_df = read_traces(PATH + "/anomaly_detection/training_traces.json")
+    # Prefer preprocessed CSV training traces if available, fall back to raw JSON.
+    csv_path = os.path.join(PATH, "anomaly_detection", "training-set.csv")
+    json_path = os.path.join(PATH, "anomaly_detection", "training_traces-2026-02-11.json")
+
+    if os.path.exists(csv_path):
+        logger.info(f"Loading training traces for IsolationForest from CSV: {csv_path}")
+        trace_df = pd.read_csv(csv_path)
+    else:
+        logger.info(f"Training traces CSV not found, falling back to JSON: {json_path}")
+        trace_df = read_traces(json_path)
     feature_columns = trace_df.select_dtypes(include=["number"]).columns.tolist()
     
     if 'total' in feature_columns:
@@ -411,23 +438,13 @@ def get_trace_IsolationForest() -> IsolationForest:
     return iso_forest, iso_forest_features
 
 
-pattern_miss_rate_thresholds = {}
-def get_pattern_miss_rate_threshold(pattern: str):
-    # global pattern_miss_rate_thresholds
-    # if pattern in pattern_miss_rate_thresholds:
-    #     return pattern_miss_rate_thresholds[pattern]
-
-    # trace_df = read_traces(PATH + "/anomaly_detection/training_traces.json")
-    # training_pattern_traces = trace_df[trace_df['pattern'] == pattern]
-
-    return 150000000 # fallback threshold
-    
-    # TODO: fix the pattern generation when loading the trace data.
-    # if training_pattern_traces.empty:
-    #     logger.warning(f"Training pattern traces are empty for pattern: {pattern}")
-    #     return 100000 # fallback threshold
-
-    training_response_times = pd.to_numeric(training_pattern_traces['total'], errors='coerce')
-    pattern_miss_rate_thresholds[pattern] = training_response_times.quantile(0.65)
-    
-    return pattern_miss_rate_thresholds[pattern]
+def get_pattern_miss_rate_threshold(response_times):
+    if response_times is None or response_times.empty:
+        return 0
+    mean_value = response_times.mean()
+    if pd.isna(mean_value):
+        return 0
+    std_value = response_times.std()
+    if pd.isna(std_value):
+        return 0
+    return mean_value + (1.5 * std_value)

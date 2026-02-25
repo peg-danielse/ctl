@@ -1,4 +1,4 @@
-GOAL = "Analyse the monitoring data and provide a revised configuration that aims to resolve the anomaly, respecting the constraints and using horizontal and vertical scaling using the provided keys and values"
+GOAL = "Analyse the monitoring data and provide a revised configuration that aims to resolve the anomaly, respecting the constraints and using horizontal and vertical scaling and service/node affinity/anti-affinity using the provided keys and values"
 
 GENERATE_PROMPT = '''
 anomaly_report:
@@ -8,8 +8,20 @@ anomaly_report:
   anomaly_type: {anomaly_type}
   duration: {duration}
 
+CONSTRAINTS (you MUST respect these):
+{constraints}
+
+NODE PLACEMENT (which services run on which nodes; use for affinity/co-location decisions):
+{node_placement}
+
+ROOT CAUSE (services with restarts or OOM killed — fix these first; e.g. if srv-rate is OOM, increase srv-rate memory, not memcached-rate):
+{root_cause}
+{root_cause_configs}
+
 metric_snapshot:
+```yaml
 {snapshot}
+```
 
 service configuration
 ```yaml
@@ -22,9 +34,10 @@ global configuration:
 ```
 '''
 
-RESULT_PROMPT = '''the configuration produced the performance indicators: \n
-json``` \n
-{result} \n
+RESULT_PROMPT = '''The configuration produced the following performance indicators:
+
+```yaml
+{result}
 ```
 '''
 

@@ -61,15 +61,139 @@ knative_autoscaling:
     value_type: float
     default: 2.0
     example_values: [1.5, 2.0, 4.0]
-  
+
   requested_cpu:
     key: requested_cpu
     scope: service
     value_type: milicores
     default: 100m
-    example_values: [100m, 200m, 400m]
+    example_values: [100m, 150m, 200m]
+
+# Kubernetes pod affinity/anti-affinity helpers
+# These describe common label keys and topology keys that can be used
+# when setting podAffinity and podAntiAffinity rules.
+kubernetes_pod_affinity:
+  pod_affinity:
+    # Label keys typically used in matchExpressions/matchLabels
+    label_selector_keys:
+      - app
+      - service
+      - component
+      - tier
+    # topologyKey values for co-locating pods
+    topology_keys:
+      - kubernetes.io/hostname
+
+  pod_anti_affinity:
+    # Label keys typically used in matchExpressions/matchLabels
+    label_selector_keys:
+      - app
+      - service
+      - component
+      - tier
+    # topologyKey values for spreading pods apart
+    topology_keys:
+      - kubernetes.io/hostname
+
+example_configuration:
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: my-service
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: my-service
+      template:
+        metadata:
+          labels:
+            app: my-service
+        spec:
+          affinity:
+            # Pin to the spark-master node
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - spark-master
+
+            # Prefer co-location with memcached-rate pods on the same node
+            podAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  labelSelector:
+                    matchLabels:
+                      app: memcached-rate
+                  topologyKey: kubernetes.io/hostname
+
+          containers:
+          - name: my-service
+            image: my-image:latest
   
+# Services that MUST always have exactly 1 replica. Do NOT change replicas, min-scale, or max-scale for these.
+# NOTE: Memcached services and frontend are intentionally NOT listed here so they can be autoscaled.
+fixed_replica_services:
+  - mongodb-rate
+  - mongodb-user
+  - mongodb-reservation
+  - mongodb-profile
+  - mongodb-geo
+  # base_config keys (anomaly attribution may use these)
+  - mongodb-rate-deployment
+  - mongodb-user-deployment
+  - mongodb-reservation-deployment
+  - mongodb-profile-deployment
+  - mongodb-geo-deployment
+
 policy_constraints:
-  - 'All services like "memcached" and "frontend" must remain at 1 replica.'
-  - 'These services are not autoscaled.'
-  - 'If performance issues are detected on fixed-replica services, recommend vertical scaling (adjust CPU/memory requests/limits).'
+  - 'CRITICAL: MongoDB services (mongodb-rate, mongodb-user, mongodb-reservation, mongodb-profile, mongodb-geo) MUST remain at 1 replica. NEVER suggest replicas != 1 for these.'
+  - 'These fixed-replica services are NOT autoscaled.'
+  - 'If performance issues are detected on fixed-replica services, recommend ONLY vertical scaling (adjust CPU/memory requests/limits). Do NOT change replica count.'
+  - 'ROOT CAUSE: If the ROOT CAUSE section shows a service with restarts or OOM_KILLED, fix THAT service first (e.g. increase its memory request/limit). Avoid repeatedly changing downstream/cache services when the real problem is an upstream service (e.g. srv-rate) being OOM killed; fix the upstream memory instead.'
+  - 'When any Knative service is OOM killed, increase its container memory request and limit; anomalies in caches or MongoDB may be a symptom of upstream failing, not of the DB/cache itself.'
+
+# Explicit parameter constraints: min/max values the LLM must respect
+parameter_constraints:
+  min_scale:
+    key: autoscaling.knative.dev/min-scale
+    min: 0
+    scope: service
+    note: 'Integer; 0 allows scale-to-zero'
+  max_scale:
+    key: autoscaling.knative.dev/max-scale
+    min: 0
+    scope: service
+    note: 'Integer; 0 means unlimited'
+  scale_down_delay:
+    key: autoscaling.knative.dev/scale-down-delay
+    range: [0s, 1h]
+    value_type: duration
+    scope: service
+  stable_window:
+    key: autoscaling.knative.dev/window
+    range: [6s, 1h]
+    value_type: duration
+    scope: service
+  panic_window_percentage:
+    key: autoscaling.knative.dev/panic-window-percentage
+    range: [1.0, 100.0]
+    scope: service
+  panic_threshold_percentage:
+    key: autoscaling.knative.dev/panic-threshold-percentage
+    range: [110.0, 1000.0]
+    scope: service
+  max_scale_up_rate:
+    key: max-scale-up-rate
+    scope: global
+    value_type: float
+    default: 1000.0
+  max_scale_down_rate:
+    key: max-scale-down-rate
+    scope: global
+    value_type: float
+    default: 2.0

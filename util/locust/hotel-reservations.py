@@ -12,11 +12,14 @@ from scipy.stats import weibull_min
 
 from random import randint, choice
 
-from locust import HttpUser, task, between, LoadTestShape
+from locust import HttpUser, task, between, LoadTestShape, tag
 from locust import events
 from locust.runners import MasterRunner
 
 from weibull import get_n_weibull_variables, compute_weibull_scale
+
+# Tag names used by Locust --tags (e.g. from main.py loadtest()). Only tasks with these tags run when --tags is passed.
+TASK_TAGS = ("search_hotel", "recommend", "reserve", "user_login")
 
 log_file=""
 
@@ -67,30 +70,35 @@ def on_start(**_kwargs):
 @events.request.add_listener
 def log_request(request_type, name, response_time, response_length, response, **kwargs):
     global log_file
-
-    with open(log_file, "a") as f:
-        f.write(f"{request_type},{name},{response_time},{response_length}, {response.status_code}\n")
+    try:
+        with open(log_file, "a") as f:
+            f.write(f"{request_type},{name},{response_time},{response_length}, {response.status_code}\n")
+    except Exception:
+        pass  # avoid request handler exceptions blocking the runner
 
 class HotelUser(HttpUser):
     wait_time = between(2,4)
 
-    @task(1) #60
+    @tag("search_hotel")
+    @task(60)
     def search_hotel(self):
         in_date = randint(9, 23)
         out_date = randint(in_date + 1, 30) 
         lat, lon = HotelUser.get_lat_lon()
         
         self.client.get(f"/hotels?inDate=2015-04-{in_date:02}&outDate=2015-04-{out_date:02}&lat={lat}&lon={lon}", 
-                        name="/hotels") # ,headers={"Content-Type":"application/x-www-form-urlencoded"})
+                        name="/hotels", timeout=10) # ,headers={"Content-Type":"application/x-www-form-urlencoded"})
 
-    @task(1) #38
+    @tag("recommend")
+    @task(38)
     def recommend(self):
         require = choice(["dis", "rate", "price"])
         lat, lon = HotelUser.get_lat_lon()
         self.client.get(f"/recommendations?require={require}&lat={lat}&lon={lon}", 
-                        name="/recommendations") # ,headers={"Content-Type":"application/x-www-form-urlencoded"})
+                        name="/recommendations", timeout=10) # ,headers={"Content-Type":"application/x-www-form-urlencoded"})
 
-    @task(0) #1
+    @tag("reserve")
+    @task(1)
     def reserve(self):
         lat, lon = HotelUser.get_lat_lon()
         in_date = randint(9, 23)
@@ -101,13 +109,14 @@ class HotelUser(HttpUser):
 
 
         self.client.post(f"/reservation?inDate=2015-04-{in_date:02}&outDate=2015-04-{out_date:02}&lat={lat}&lon={lon}&hotelId={hotel_id}&customerName={username}&username={username}&password={password}&number={num_room}",
-                        name="/reservation")
+                        name="/reservation", timeout=10)
 
-    @task(0) #1
+    @tag("user_login")
+    @task(1)
     def user_login(self):
         username, password = HotelUser.get_user()
         self.client.post(f"/user?username={username}&password={password}",
-                        name="/user")
+                        name="/user", timeout=10)
 
     @staticmethod
     def get_lat_lon():
@@ -138,7 +147,6 @@ class WeibullShape(LoadTestShape):
         # Plot histogram of samples
         plt.figure(figsize=(10, 6))
         bins = np.linspace(tmin, tmax, 100)
-        print
         plt.hist([int(e["load"]) - o for e, o in zip(stages, offset)], bins=bins, density=True, alpha=0.6, color='lightgreen', edgecolor='black', label="Truncated Weibull Samples")
 
         # Plot analytical truncated PDF
@@ -208,7 +216,7 @@ class WeibullShape(LoadTestShape):
             
             print(self.stages)
 
-            self.plot(U_min, U_max, w_shape, _lambda, N, t, self.stages, offset, seed,  label)
+            # self.plot(U_min, U_max, w_shape, _lambda, N, t, self.stages, offset, seed,  label)
          
         run_time = self.get_run_time()
 
@@ -216,4 +224,8 @@ class WeibullShape(LoadTestShape):
             if run_time < stage["start"]:
                 return (stage["load"], stage["rate"])
 
+        # Past all stages: keep last stage's load until --run-time ends (avoid returning None and stalling)
+        if self.stages:
+            last = self.stages[-1]
+            return (last["load"], last["rate"])
         return None

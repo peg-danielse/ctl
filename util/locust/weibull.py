@@ -34,7 +34,6 @@ def plot(tmin, tmax, shape_k, scale_lambda, N, T, stages, offset, seed, label="t
         # Plot histogram of samples
         plt.figure(figsize=(10, 6))
         bins = np.linspace(tmin, tmax, 100)
-        print
         plt.hist([int(e["load"]) - o for e, o in zip(stages, offset)], bins=bins, density=True, alpha=0.6, color='lightgreen', edgecolor='black', label="Truncated Weibull Samples")
 
         # Plot analytical truncated PDF
@@ -112,6 +111,6 @@ if __name__ == "__main__":
         l_prev = l
     
 
-    plot(U_min, U_max, w_shape, _lambda, N, t, stages, offset, 42,  label)
+    # plot(U_min, U_max, w_shape, _lambda, N, t, stages, offset, 42,  label)
     print(stages)
 
