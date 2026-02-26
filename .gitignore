@@ -4,3 +4,5 @@ locust/user*
 venv
 __pycache__
 .env
+*.csv
+*.json
