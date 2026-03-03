@@ -137,11 +137,119 @@ def _(parser):
     parser.add_argument("--w-user-max", type=int, is_required=False, default=1000)
     parser.add_argument("--w-dt", type=int, is_required=False, default=20)
     parser.add_argument("--w-ls-y", type=int, is_required=False, default=500)
-    parser.add_argument("--w-dry-run", type=int, is_required=False, default=False)    
+    parser.add_argument("--w-dry-run", type=int, is_required=False, default=False)
+
+    # Generic options for load shape experiments.
+    # experiment_type: 1 = cyclic (a_min/a_avg/a_max), 2 = Weibull (default), 3 = reserved.
+    parser.add_argument("--experiment-type", type=int, is_required=False, default=2)
+    # Generic timestep (seconds). If not provided, falls back to --w-dt for backwards compatibility.
+    parser.add_argument("--dt", type=int, is_required=False, default=None)
+    # Parameters for experiment type 1 (cyclic levels).
+    parser.add_argument("--a-min", type=int, is_required=False, default=100)
+    parser.add_argument("--a-avg", type=int, is_required=False, default=500)
+    parser.add_argument("--a-max", type=int, is_required=False, default=1000)
+    # Number of timesteps (dt intervals) to hold each level before switching.
+    parser.add_argument("--a-n-steps", type=int, is_required=False, default=5)
     
-class WeibullShape(LoadTestShape):
+class CloudShape(LoadTestShape):
     stages = []
     use_common_options = True
+
+    def _get_dt(self):
+        """
+        Resolve the timestep used by all experiment types.
+        Prefer the generic --dt if set, otherwise fall back to the original --w-dt.
+        """
+        opts = self.runner.environment.parsed_options
+        dt = getattr(opts, "dt", None)
+        if dt is not None:
+            return dt
+        return opts.w_dt
+
+    def _build_weibull_stages(self):
+        """
+        Original Weibull-based load pattern, extracted into a helper so it can be
+        selected as one of multiple experiment types.
+        """
+        opts = self.runner.environment.parsed_options
+
+        w_shape = opts.w_shape
+        w_mean = opts.w_mean
+        U_min = opts.w_user_min
+        U_max = opts.w_user_max
+        t = opts.run_time
+        dt = self._get_dt()
+        ls_y = opts.w_ls_y
+        seed = opts.seed
+
+        _lambda = compute_weibull_scale(w_mean, w_shape)
+        N = int(t / dt)
+        L = get_n_weibull_variables(w_shape, _lambda, U_min, U_max, N, seed)
+
+        stages = []
+        l_prev = 0
+
+        # Offset is used to lift the baseline load over time.
+        offset = np.linspace(U_min, U_min + ls_y, N)
+
+        for s, l, o in zip(range(dt, t + dt, dt), L, offset):
+            raw_rate = int(math.ceil(abs((l_prev - l) / dt)))
+            # Ensure a strictly positive spawn rate whenever we have a positive load
+            # to avoid Locust division-by-zero issues.
+            rate = max(1, raw_rate) if l + o > 0 else 0
+
+            stages.append(
+                {
+                    "start": s,
+                    "load": int(l + o),
+                    "rate": rate,
+                }
+            )
+            l_prev = l
+
+        return stages
+
+    def _build_cyclic_stages(self):
+        """
+        Experiment type 1:
+        Cycles between three fixed load levels (a_min, a_avg, a_max) provided via CLI.
+        Each level is held for a_n_steps timesteps (dt) before switching.
+        """
+        opts = self.runner.environment.parsed_options
+
+        t = opts.run_time
+        dt = self._get_dt()
+
+        a_min = opts.a_min
+        a_avg = opts.a_avg
+        a_max = opts.a_max
+        n_steps = opts.a_n_steps
+
+        levels = [a_min, a_avg, a_max]
+
+        stages = []
+        # Start from zero so the first step represents a ramp from 0 -> first level.
+        prev_load = 0
+
+        # For each timestep, choose the appropriate level from the cycle.
+        for idx, start in enumerate(range(dt, t + dt, dt)):
+            level_index = (idx // n_steps) % len(levels)
+            load = levels[level_index]
+
+            raw_rate = int(math.ceil(abs(load - prev_load) / dt))
+            # Ensure a strictly positive spawn rate whenever target load is positive.
+            rate = max(1, raw_rate) if load > 0 else 0
+
+            stages.append(
+                {
+                    "start": start,
+                    "load": load,
+                    "rate": rate,
+                }
+            )
+            prev_load = load
+
+        return stages
 
     def plot(self, tmin, tmax, shape_k, scale_lambda, N, T, stages, offset, seed, label):
         # Plot histogram of samples
@@ -187,36 +295,21 @@ class WeibullShape(LoadTestShape):
     def tick(self):
         # build stages on the first tick.
         if self.stages == []:
-            label = self.runner.environment.parsed_options.csv_prefix
-            seed = self.runner.environment.parsed_options.seed
-            
-            w_shape  = self.runner.environment.parsed_options.w_shape
-            w_mean  = self.runner.environment.parsed_options.w_mean
-            U_min  = self.runner.environment.parsed_options.w_user_min
-            U_max  = self.runner.environment.parsed_options.w_user_max
-            t  = self.runner.environment.parsed_options.run_time
-            dt  = self.runner.environment.parsed_options.w_dt
+            opts = self.runner.environment.parsed_options
+            experiment_type = getattr(opts, "experiment_type", 2)
 
-            ls_y  = self.runner.environment.parsed_options.w_ls_y
-            
+            if experiment_type == 1:
+                # New cyclic a_min/a_avg/a_max pattern.
+                self.stages = self._build_cyclic_stages()
+            elif experiment_type == 2:
+                # Original Weibull-based pattern (default).
+                self.stages = self._build_weibull_stages()
+            else:
+                # Fallback to Weibull for any unrecognized experiment type, including the
+                # placeholder third experiment type until it is implemented.
+                self.stages = self._build_weibull_stages()
 
-            ## magic-kit
-            _lambda = compute_weibull_scale(w_mean, w_shape)
-            N = int(t/dt)
-            L = get_n_weibull_variables(w_shape, _lambda, U_min, U_max, N, seed)
-
-            l_prev = 0
-
-            # or logspace()
-            offset = np.linspace(U_min, U_min + ls_y, N)
-
-            for s, l, o in zip(range(dt,t+dt,dt), L, offset):
-                self.stages.append({"start": s, "load": int(l + o), "rate": int(math.ceil(abs((l_prev - l)/dt)))})
-                l_prev = l
-            
             print(self.stages)
-
-            # self.plot(U_min, U_max, w_shape, _lambda, N, t, self.stages, offset, seed,  label)
          
         run_time = self.get_run_time()
 

@@ -152,6 +152,9 @@ def loadtest(duration, label, phase, tags=None):
         tags = DEFAULT_LOADTEST_TAGS
     logger.info(f"Pressure test {label}_{phase} for {duration} seconds (tags: {tags})")
 
+    # locust --processes 16 -f ./util/locust/hotel-reservations.py -H "http://145.100.135.11:30505" -t 600s --headless --csv mma1 --experiment-type 2 --w-shape 1 --w-mean 5000 --w-user-min 3000 --w-user-max 10000 --w-ls-y 2000 --w-dt 120 --seed 42
+    
+    # locust --processes 16 -f ./util/locust/hotel-reservations.py -H "http://145.100.135.11:30505" -t 600s --headless --csv mma1 --experiment-type 1 --a-min 1000 --a-avg 3000 --a-max 8000 --a-n-steps 2 --dt 180
     try:
         cmd = [
             "locust",
@@ -160,14 +163,14 @@ def loadtest(duration, label, phase, tags=None):
             "-H", "http://145.100.135.11:30505",
             "-t", str(duration) + "s",
             "--csv", label,
+            "--experiment-type", "1",
+            "--a-min", str(500),
+            "--a-avg", str(1000),
+            "--a-max", str(3000),
+            "--a-n-steps", str(1),
+            "--dt", str(duration / 6),
             "--headless",
             "--tags", *tags,
-            "--w-user-min", str(3000),
-            "--w-user-max", str(10000),
-            "--w-mean", str(5000),
-            "--w-ls-y", str(2000),
-            "--w-dt", str(120),
-            "--seed", str(42),
         ]
         
         process = subprocess.Popen(
@@ -509,13 +512,13 @@ if __name__ == "__main__":
 
     experiments = []
 
-    # # baseline experiments
-    # for tags in tags_list:
-    #     experiments.append({
-    #         "l": f"{start}_baseline_endpoints-{'_'.join(tags)}",
-    #         "t": total_time,
-    #         "tags": tags
-    #     })
+    # baseline experiments
+    for tags in tags_list:
+        experiments.append({
+            "l": f"{start}_baseline_endpoints-{'_'.join(tags)}",
+            "t": total_time,
+            "tags": tags
+        })
 
     # adaptation experiments
     for tags in tags_list:
