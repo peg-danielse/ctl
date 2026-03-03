@@ -534,7 +534,7 @@ if __name__ == "__main__":
     for experiment in experiments:
         print(f"{experiment['l']}")
 
-    input("Press Enter to start the experiments...")
+    print("Press Enter to start the experiments...")
 
     for experiment in experiments:
         main(argv=[], **experiment)
