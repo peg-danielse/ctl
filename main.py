@@ -517,7 +517,8 @@ if __name__ == "__main__":
         experiments.append({
             "l": f"{start}_baseline_endpoints-{'_'.join(tags)}",
             "t": total_time,
-            "tags": tags
+            "tags": tags,
+            "basline" : True,
         })
 
     # adaptation experiments
