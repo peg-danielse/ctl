@@ -20,9 +20,11 @@ ctl/
 │   ├── srv-*.yaml          # Service definitions (geo, profile, rate, recommendation, reservation, search, user)
 │   └── ...
 │
-├── knowledge/              # Domain knowledge for the LLM (autoscaling keys, constraints)
-│   ├── knative_autoscaling_knowledge.yaml
-│   └── knative_autoscaling_knowledge2.yaml   # Used by llm_client (KNOWLEDGE_PATH)
+├── knowledge/              # Domain knowledge for the LLM (autoscaling keys, constraints, affinity)
+│   ├── knative_autoscaling.yaml       # Knative autoscaling keys/annotations and value examples
+│   ├── affinity.yaml                  # Pod affinity/anti-affinity helpers and example Deployment
+│   ├── constraints.yaml               # Fixed-replica services, policy rules, parameter ranges
+│   └── knative_autoscaling_knowledge2.yaml   # Legacy single-file variant (fallback)
 │
 ├── anomaly_detection/      # Training data for anomaly detection (Isolation Forest)
 │   ├── training-set.csv    # Preprocessed trace features (preferred if present)
@@ -46,7 +48,7 @@ ctl/
 ```
 
 - **base_configuration**: Defines which services exist; only these can be updated by the LLM. ConfigManager seeds `output/{label}/config/` from here.
-- **knowledge**: Constrains LLM output (e.g. Knative keys, fixed-replica services, parameter ranges).
+- **knowledge**: Constrains LLM output (e.g. Knative keys, fixed-replica services, parameter ranges, affinity helpers).
 - **anomaly_detection**: Training data for the Isolation Forest model used in `util/analysis.py` to detect anomalous traces.
 - **util/data_retrieval**: Hardcoded Prometheus and Jaeger base URLs; override by changing constants or passing different URLs into `DataCollector`.
 - **util/square**: Uses `config.KUBE_URL` and `config.KUBE_API_TOKEN` for cluster access.
@@ -123,7 +125,7 @@ GEMINI_API_KEY=your_gemini_api_key
 ### 3.4 Base configuration and knowledge
 
 - **base_configuration/**: Replace or edit YAMLs so they match your cluster (same namespaces, resource names, and structure). Only services that appear here can be updated by the LLM.
-- **knowledge/**: Adjust `knative_autoscaling_knowledge2.yaml` (or the file pointed to by `KNOWLEDGE_PATH` in `util/llm_client.py`) to match your autoscaling/constraint model (keys, ranges, fixed-replica list).
+- **knowledge/**: Adjust `knative_autoscaling.yaml`, `constraints.yaml`, and `affinity.yaml` to match your autoscaling/constraint model (keys, ranges, fixed-replica list, affinity conventions). The legacy `knative_autoscaling_knowledge2.yaml` is still supported as a fallback.
 
 ### 3.5 Load test
 

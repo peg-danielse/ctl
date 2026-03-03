@@ -1,0 +1,61 @@
+fixed_replica_services:
+  - mongodb-rate
+  - mongodb-user
+  - mongodb-reservation
+  - mongodb-profile
+  - mongodb-geo
+  # base_config keys (anomaly attribution may use these)
+  - mongodb-rate-deployment
+  - mongodb-user-deployment
+  - mongodb-reservation-deployment
+  - mongodb-profile-deployment
+  - mongodb-geo-deployment
+
+policy_constraints:
+  - 'CRITICAL: MongoDB services (mongodb-rate, mongodb-user, mongodb-reservation, mongodb-profile, mongodb-geo) MUST remain at 1 replica. NEVER suggest replicas != 1 for these.'
+  - 'These fixed-replica services are NOT autoscaled.'
+  - 'If performance issues are detected on fixed-replica services, recommend ONLY vertical scaling (adjust CPU/memory requests/limits). Do NOT change replica count.'
+  - 'ROOT CAUSE: If the ROOT CAUSE section shows a service with restarts or OOM_KILLED, fix THAT service first (e.g. increase its memory request/limit). Avoid repeatedly changing downstream/cache services when the real problem is an upstream service (e.g. srv-rate) being OOM killed; fix the upstream memory instead.'
+  - 'When any Knative service is OOM killed, increase its container memory request and limit; anomalies in caches or MongoDB may be a symptom of upstream failing, not of the DB/cache itself.'
+
+# Explicit parameter constraints: min/max values the LLM must respect
+parameter_constraints:
+  min_scale:
+    key: autoscaling.knative.dev/min-scale
+    min: 0
+    scope: service
+    note: 'Integer; 0 allows scale-to-zero'
+  max_scale:
+    key: autoscaling.knative.dev/max-scale
+    min: 0
+    scope: service
+    note: 'Integer; 0 means unlimited'
+  scale_down_delay:
+    key: autoscaling.knative.dev/scale-down-delay
+    range: [0s, 1h]
+    value_type: duration
+    scope: service
+  stable_window:
+    key: autoscaling.knative.dev/window
+    range: [6s, 1h]
+    value_type: duration
+    scope: service
+  panic_window_percentage:
+    key: autoscaling.knative.dev/panic-window-percentage
+    range: [1.0, 100.0]
+    scope: service
+  panic_threshold_percentage:
+    key: autoscaling.knative.dev/panic-threshold-percentage
+    range: [110.0, 1000.0]
+    scope: service
+  max_scale_up_rate:
+    key: max-scale-up-rate
+    scope: global
+    value_type: float
+    default: 1000.0
+  max_scale_down_rate:
+    key: max-scale-down-rate
+    scope: global
+    value_type: float
+    default: 2.0
+

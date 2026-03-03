@@ -27,11 +27,6 @@ service configuration
 ```yaml
 {service_config}
 ```
-
-global configuration:
-```yaml
-{auto_config}
-```
 '''
 
 RESULT_PROMPT = '''The configuration produced the following performance indicators:
@@ -41,14 +36,28 @@ RESULT_PROMPT = '''The configuration produced the following performance indicato
 ```
 '''
 
+REPAIR_PROMPT = '''
+The previous configuration you suggested for service '{service_name}' failed to apply to the Kubernetes/Knative cluster.
 
-# WIP
+Here is the YAML that failed:
+```yaml
+{failed_yaml}
+```
+
+Here is the exact error returned by the API:
+{error_message}
+
+Please output a corrected configuration YAML that fixes this error while still respecting all policies and constraints.
+Respond with YAML only.
+'''
+
+
+# WIP (not currently wired into the main loop)
 CHECK_PROMPT = '''
 You are a Kubernetes autoscaling expert. Your job is to tune Knative autoscaler configurations in response to performance anomalies. The following context includes:
 
 - An anomaly observed in a service
-- The previous autoscaler configuration
-- The model's suggested changes
+- The applied configuration
 - The performance results of applying that configuration under the same workload
 
 Your goal is to analyze whether the configuration resolved the anomaly and suggest improvements if needed.
@@ -60,7 +69,6 @@ Anomaly:
 
   applied config:
     {service_config}
-    {auto_config}
 
 result_snapshot:
   {config_performance}

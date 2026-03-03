@@ -1,0 +1,63 @@
+kubernetes_pod_affinity:
+  pod_affinity:
+    # Label keys typically used in matchExpressions/matchLabels
+    label_selector_keys:
+      - app
+      - service
+      - component
+      - tier
+    # topologyKey values for co-locating pods
+    topology_keys:
+      - kubernetes.io/hostname
+
+  pod_anti_affinity:
+    # Label keys typically used in matchExpressions/matchLabels
+    label_selector_keys:
+      - app
+      - service
+      - component
+      - tier
+    # topologyKey values for spreading pods apart
+    topology_keys:
+      - kubernetes.io/hostname
+
+example_configuration:
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: my-service
+  spec:
+    replicas: 1
+    selector:
+      matchLabels:
+        app: my-service
+    template:
+      metadata:
+        labels:
+          app: my-service
+      spec:
+        affinity:
+          # Pin to the spark-master node
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+              - matchExpressions:
+                - key: kubernetes.io/hostname
+                  operator: In
+                  values:
+                    - spark-master
+
+          # Prefer co-location with memcached-rate pods on the same node
+          podAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: memcached-rate
+                topologyKey: kubernetes.io/hostname
+
+        containers:
+        - name: my-service
+          image: my-image:latest
+

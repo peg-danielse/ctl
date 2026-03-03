@@ -10,11 +10,16 @@ import logging
 from typing import Any, Optional
 
 from config import GEN_API_URL, OPENAI_API_KEY, OPENAI_MODEL, GEMINI_API_KEY, GEMINI_MODEL, PATH
-from prompt import GENERATE_PROMPT, GOAL, RESULT_PROMPT
+from prompt import GENERATE_PROMPT, GOAL, RESULT_PROMPT, REPAIR_PROMPT
 from util.config_manager import ConfigManager, load_yaml_as_string
 from util.data_retrieval import DataCollector
 
-KNOWLEDGE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "knowledge", "knative_autoscaling_knowledge2.yaml")
+KNOWLEDGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "knowledge")
+CONSTRAINTS_PATH = os.path.join(KNOWLEDGE_DIR, "constraints.yaml")
+KNATIVE_AUTOSCALING_PATH = os.path.join(KNOWLEDGE_DIR, "knative_autoscaling.yaml")
+AFFINITY_PATH = os.path.join(KNOWLEDGE_DIR, "affinity.yaml")
+# Legacy single-file knowledge path (kept for backward compatibility)
+KNOWLEDGE_PATH = os.path.join(KNOWLEDGE_DIR, "knative_autoscaling_knowledge2.yaml")
 
 
 def _format_snapshot_for_prompt(data: dict) -> str:
@@ -48,15 +53,55 @@ logger = logging.getLogger(__name__)
 data_collector = DataCollector.get_instance()
 
 
-def _build_constraints_text() -> str:
-    """Load knowledge file and format constraints for the prompt."""
+def _load_knowledge_dict(path: str) -> dict:
+    """Load a YAML knowledge file into a dict, with logging on failure."""
     try:
-        with open(KNOWLEDGE_PATH) as f:
-            knowledge = yaml.safe_load(f)
+        with open(path) as f:
+            data = yaml.safe_load(f) or {}
+        return data
     except Exception as e:
-        logger.warning(f"Could not load knowledge file: {e}")
+        logger.warning("Could not load knowledge file %s: %s", path, e)
+        return {}
+
+
+def _load_knowledge_text() -> str:
+    """
+    Load all knowledge YAML snippets as a single text blob for the Chat
+    system prompt. Prefers the split files; falls back to the legacy file.
+    """
+    parts: list[str] = []
+    for filename in ("knative_autoscaling.yaml", "affinity.yaml", "constraints.yaml"):
+        path = os.path.join(PATH, "knowledge", filename)
+        if not os.path.exists(path):
+            continue
+        try:
+            parts.append(load_yaml_as_string(path))
+        except Exception as e:
+            logger.warning("Could not load YAML knowledge file %s: %s", path, e)
+    if parts:
+        return "\n\n".join(parts)
+    # Fallback: legacy single-file knowledge
+    legacy_path = os.path.join(PATH, "knowledge", "knative_autoscaling_knowledge2.yaml")
+    try:
+        return load_yaml_as_string(legacy_path)
+    except Exception as e:
+        logger.warning("Could not load legacy knowledge file %s: %s", legacy_path, e)
+        return ""
+
+
+def _build_constraints_text() -> str:
+    """Load constraints knowledge and format constraints for the prompt."""
+    # Prefer dedicated constraints.yaml, fall back to legacy file if needed.
+    knowledge: dict = {}
+    if os.path.exists(CONSTRAINTS_PATH):
+        knowledge = _load_knowledge_dict(CONSTRAINTS_PATH)
+    elif os.path.exists(KNOWLEDGE_PATH):
+        knowledge = _load_knowledge_dict(KNOWLEDGE_PATH)
+    else:
+        logger.warning("No constraints knowledge file found; using default constraints text.")
         return "Policy: respect existing configuration keys and valid value ranges."
-    lines = []
+
+    lines: list[str] = []
     # Fixed-replica services (NEVER change replicas for these)
     fixed = knowledge.get("fixed_replica_services") or []
     if fixed:
@@ -91,12 +136,14 @@ def _build_constraints_text() -> str:
 
 def get_fixed_replica_services() -> set:
     """Return set of service names that must always have 1 replica."""
-    try:
-        with open(KNOWLEDGE_PATH) as f:
-            knowledge = yaml.safe_load(f)
-        return set(knowledge.get("fixed_replica_services") or [])
-    except Exception:
-        return set()
+    # Prefer dedicated constraints.yaml; fall back to legacy file.
+    for path in (CONSTRAINTS_PATH, KNOWLEDGE_PATH):
+        if not os.path.exists(path):
+            continue
+        knowledge = _load_knowledge_dict(path)
+        if knowledge:
+            return set(knowledge.get("fixed_replica_services") or [])
+    return set()
 
 
 def enforce_fixed_replica_policy(service_name: str, config: dict) -> dict:
@@ -214,7 +261,7 @@ def generate_prompt(service_name, trace_df, metric_dfs,
                                                         phase="adaptation", 
                                                         subphase="configuration_application")
 
-    # Load service and autoscaler configurations (must exist in base_configuration)
+    # Load service configuration (must exist in base_configuration)
     logger.info(f"loading service config for {service_name}")
 
     config_manager = ConfigManager.get_instance(label)
@@ -229,7 +276,6 @@ def generate_prompt(service_name, trace_df, metric_dfs,
         return None
 
     service_config = yaml.dump(raw_service_config)
-    auto_config = yaml.dump(config_manager.get_service_config("config-autoscaler"))
 
     # Build constraints, node placement, root-cause, and current configs for root-cause services
     constraints = _build_constraints_text()
@@ -254,7 +300,6 @@ def generate_prompt(service_name, trace_df, metric_dfs,
         root_cause_configs=root_cause_configs,
         snapshot=_format_snapshot_for_prompt(snapshot),
         service_config=service_config,
-        auto_config=auto_config
     )
     
     return prompt
@@ -557,29 +602,39 @@ class ChatManager():
     instance = None
 
     @staticmethod
-    def get_instance():
+    def get_instance() -> "ChatManager":
         if ChatManager.instance is None:
             ChatManager.instance = ChatManager()
         return ChatManager.instance
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.chats: list[Chat] = []
-        self.knowledge = load_yaml_as_string(PATH + '/knowledge/knative_autoscaling_knowledge2.yaml')
+        self.knowledge = _load_knowledge_text()
         self.goal = GOAL
 
-    def add_chat(self, service_name):
+    def add_chat(self, service_name: str) -> None:
         self.chats.append(Chat(service_name, self.knowledge, self.goal))
 
-    def get_chat(self, service_name) -> Chat:
+    def get_chat(self, service_name: str) -> Optional[Chat]:
         return next((item for item in self.chats if item.service_name == service_name), None)
 
-    def add_example(self, service_name, configuration, result):
+    def add_example(self, service_name: str, configuration: Any, result: Any) -> None:
         selected = self.get_chat(service_name)
+        if selected is None:
+            # Lazily create a chat if none exists yet for this service.
+            selected = Chat(service_name, self.knowledge, self.goal)
+            self.chats.append(selected)
         formatted_result = _format_snapshot_for_prompt(result)
         selected.add_example(configuration, RESULT_PROMPT.format(result=formatted_result))
 
     # keep chat in memory, if the service_name is the same, update the chat
-    def generate_configuration(self, prompt, service_name, llm_type: str = "openai", label: Optional[str] = None) -> Optional[str]:
+    def generate_configuration(
+        self,
+        prompt: Any,
+        service_name: str,
+        llm_type: str = "openai",
+        label: Optional[str] = None,
+    ) -> Optional[str]:
         """
         Ask the configured LLM for a new configuration for the given service.
 
@@ -631,43 +686,62 @@ class ChatManager():
             logger.error("Failed to write LLM debug log for '%s': %s", service_name, e)
 
         if not llm_response or not str(llm_response).strip():
-            logger.error("LLM returned an empty response for service '%s'; skipping configuration.", service_name)
+            logger.error(
+                "LLM returned an empty response for service '%s'; skipping configuration.",
+                service_name,
+            )
             return None
 
         configuration = read_prompt(llm_response)
         if not configuration or not str(configuration).strip():
-            logger.error("No configuration could be parsed from LLM response for service '%s'; skipping.", service_name)
+            logger.error(
+                "No configuration could be parsed from LLM response for service '%s'; skipping.",
+                service_name,
+            )
             return None
 
         # Print generated configuration to stdout (applies to both OpenAI and Gemini)
-        print(f"\n--- Generated configuration for {service_name} ({llm_type}) ---\n{configuration}\n---")
-
-        # Persist generated configuration close to the LLM client.
-        # If we know the experiment label, save under that run's config folder.
-        try:
-            if label:
-                config_dir = os.path.join(PATH, "output", label, "config")
-            else:
-                config_dir = os.path.join(PATH, "output", "tmp", "config")
-            os.makedirs(config_dir, exist_ok=True)
-            ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
-            safe_service = service_name.replace("/", "_")
-            generated_path = os.path.join(config_dir, f"generated_{safe_service}_{ts}.yaml")
-            with open(generated_path, "w") as f:
-                f.write(configuration)
-            logger.info("Saved generated config for '%s' to %s", service_name, generated_path)
-        except Exception as e:
-            logger.error("Failed to persist generated configuration for '%s': %s", service_name, e)
+        print(
+            f"\n--- Generated configuration for {service_name} ({llm_type}) ---\n"
+            f"{configuration}\n---"
+        )
 
         return configuration
 
-    def save_all_chats(self, label):
-        import os
+    def generate_configuration_with_error_feedback(
+        self,
+        service_name: str,
+        failed_config: Any,
+        error_message: str,
+        llm_type: str = "openai",
+        label: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        Ask the LLM to repair a configuration that failed to apply, using the
+        failed YAML and the Kubernetes/Knative error message as extra context.
+        """
+        try:
+            failed_yaml = yaml.dump(
+                failed_config, default_flow_style=False, sort_keys=False
+            )
+        except Exception:
+            failed_yaml = str(failed_config)
+
+        repair_prompt = REPAIR_PROMPT.format(
+            service_name=service_name,
+            failed_yaml=failed_yaml,
+            error_message=error_message,
+        )
+        return self.generate_configuration(
+            repair_prompt, service_name, llm_type=llm_type, label=label
+        )
+
+    def save_all_chats(self, label: str) -> None:
         for chat in self.chats:
             # Create directory if it doesn't exist
             chat_dir = PATH + f"/output/{label}/data/chats"
             os.makedirs(chat_dir, exist_ok=True)
-            
+
             with open(f"{chat_dir}/{chat.service_name}.yaml", "w") as f:
                 # High-level goal and knowledge context
                 f.write(f"{chat.goal}\n")
@@ -698,6 +772,28 @@ class ChatManager():
                         f.write("llm_response: |\n")
                         for line in str(exchange.get("response", "")).splitlines() or [""]:
                             f.write(f"  {line}\n")
+
+def persist_generated_configuration(service_name: str, configuration_yaml: str, label: Optional[str] = None) -> None:
+    """
+    Persist a generated configuration YAML close to the LLM client.
+
+    If an experiment label is provided, save under that run's config folder;
+    otherwise, use a shared tmp folder for debugging.
+    """
+    try:
+        if label:
+            config_dir = os.path.join(PATH, "output", label, "config")
+        else:
+            config_dir = os.path.join(PATH, "output", "tmp", "config")
+        os.makedirs(config_dir, exist_ok=True)
+        ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
+        safe_service = service_name.replace("/", "_")
+        generated_path = os.path.join(config_dir, f"generated_{safe_service}_{ts}.yaml")
+        with open(generated_path, "w") as f:
+            f.write(configuration_yaml)
+        logger.info("Saved generated config for '%s' to %s", service_name, generated_path)
+    except Exception as e:
+        logger.error("Failed to persist generated configuration for '%s': %s", service_name, e)
 
 
 def task_score_configuration(measurement_time, configuration, service_name, label):

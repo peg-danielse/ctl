@@ -19,7 +19,13 @@ import yaml
 
 from util.config_manager import ConfigManager
 from util.data_retrieval import DataCollector
-from util.llm_client import ChatManager, generate_prompt, task_score_configuration, enforce_fixed_replica_policy
+from util.llm_client import (
+    ChatManager,
+    generate_prompt,
+    task_score_configuration,
+    enforce_fixed_replica_policy,
+    persist_generated_configuration,
+)
 from util.plot import SnapshotPlotter
 
 import matplotlib
@@ -156,12 +162,12 @@ def loadtest(duration, label, phase, tags=None):
             "--csv", label,
             "--headless",
             "--tags", *tags,
-            "--w-user-min", str(2000),
-            "--w-user-max", str(6000),
-            "--w-mean", str(1200),
+            "--w-user-min", str(3000),
+            "--w-user-max", str(10000),
+            "--w-mean", str(5000),
             "--w-ls-y", str(2000),
-            "--w-dt", str(60),
-            "--seed", str(42), # simple_hash(f"fix")
+            "--w-dt", str(120),
+            "--seed", str(42),
         ]
         
         process = subprocess.Popen(
@@ -224,7 +230,7 @@ def get_parser():
     parser.add_argument("-a", type=int, default=16, help="Number of anomalies to process per iteration.")
     parser.add_argument("-llm", type=str, default="openai", choices=["openai", "gemini", "self-hosted"], help="LLM to use for configuration generation.")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose (DEBUG) logging.")
-    parser.add_argument("--baseline", action="store_true", help="Run an initial baseline phase before adaptation.")
+    parser.add_argument("--baseline", action="store_true", help="Run baseline phase only (no adaptation).")
     parser.add_argument("--tags", nargs="+", default=None,
                         help="Locust task tags to run (default: search_hotel recommend reserve user_login). Must match @tag names in util/locust/hotel-reservations.py.")
     init_group = parser.add_mutually_exclusive_group()
@@ -322,8 +328,10 @@ def main(argv=None, **kwargs):
         move_label_outputs(baseline_label)
 
         logger.critical(f"baseline phase completed for {baseline_label}")
-    
-    # Start adaptation phase
+        # Baseline mode: no adaptation phase; exit after baseline.
+        return
+
+    # Start adaptation phase (skipped when --baseline)
     logger.critical(f"starting adaptation phase")
 
     # Start pressure test thread
@@ -387,9 +395,71 @@ def main(argv=None, **kwargs):
                         continue
 
                     configuration_update = enforce_fixed_replica_policy(service_name, configuration_update)
-                    if not config_manager.set_service_config(service_name, configuration_update):
-                        continue  # skipped (e.g. not in base config); do not score
-                    # score the configuration
+                    applied = config_manager.set_service_config(service_name, configuration_update)
+                    if not applied:
+                        # If the apply failed due to a Kubernetes/Knative error (not just missing base config),
+                        # ask the LLM once more to repair the configuration using the error message and YAML.
+                        error_msg = getattr(config_manager, "last_apply_error", None)
+                        if not error_msg:
+                            continue  # skipped (e.g. not in base config); do not score
+                        logger.warning(
+                            "Configuration apply failed for %s with error: %s. Requesting LLM repair.",
+                            service_name,
+                            error_msg,
+                        )
+                        try:
+                            repaired_yaml = chat_manager.generate_configuration_with_error_feedback(
+                                svc,
+                                configuration_update,
+                                error_msg,
+                                llm_type=args.llm,
+                                label=label,
+                            )
+                        except Exception as e:
+                            logger.error(
+                                "Error while requesting LLM repair for service %s: %s",
+                                service_name,
+                                e,
+                            )
+                            continue
+
+                        if not repaired_yaml:
+                            continue
+
+                        for repaired_update in yaml.safe_load_all(repaired_yaml):
+                            if not isinstance(repaired_update, dict):
+                                logger.warning(
+                                    "Skipping non-dict repaired configuration document: %s",
+                                    repaired_update,
+                                )
+                                continue
+
+                            repaired_metadata = repaired_update.get("metadata") or {}
+                            repaired_service_name = repaired_metadata.get("name") or svc
+                            repaired_update = enforce_fixed_replica_policy(
+                                repaired_service_name, repaired_update
+                            )
+                            if not config_manager.set_service_config(
+                                repaired_service_name, repaired_update
+                            ):
+                                continue
+                            dirty_store[repaired_service_name] = threading.Thread(
+                                target=task_score_configuration,
+                                args=(measurement_time, repaired_update, svc, label),
+                            )
+                        continue  # done handling this original configuration; move to next
+
+                    # Persist configuration only after successful apply, then score it.
+                    try:
+                        config_yaml = yaml.dump(configuration_update, default_flow_style=False, sort_keys=False)
+                        persist_generated_configuration(service_name, config_yaml, label=label)
+                    except Exception as e:
+                        logger.error(
+                            "Failed to persist applied configuration for service %s: %s",
+                            service_name,
+                            e,
+                        )
+
                     dirty_store[service_name] = threading.Thread(
                         target=task_score_configuration,
                         args=(measurement_time, configuration_update, svc, label)
@@ -403,9 +473,6 @@ def main(argv=None, **kwargs):
         if skip_counts_this_batch:
             parts = [f"{svc} ({n})" for svc, n in sorted(skip_counts_this_batch.items())]
             logger.info(f"skipped anomalies (service already had config this batch): {', '.join(parts)}")
-
-        # save all configs
-        config_manager.save_all_configs()
 
         # wait to stabilize the system
         phase_queue.put(("adaptation", "stabilization"))
@@ -438,19 +505,33 @@ def main(argv=None, **kwargs):
 if __name__ == "__main__":
     start = datetime.now().strftime("%Y%m%d_%H%M%S")
     total_time = 180
+    tags_list = (["search_hotel", "recommend"], ["search_hotel", "recommend", "reserve", "user_login"])
 
-    for i in range(1, 3):
-        print(f"--- Experiment {i} ---")
+    experiments = []
 
+    # # baseline experiments
+    # for tags in tags_list:
+    #     experiments.append({
+    #         "l": f"{start}_baseline_endpoints-{'_'.join(tags)}",
+    #         "t": total_time,
+    #         "tags": tags
+    #     })
+
+    # adaptation experiments
+    for tags in tags_list:
         for llm in ("gemini","openai"):
-            for tags in (["search_hotel", "recommend"], ["search_hotel", "recommend", "reserve", "user_login"]):
-                experiment = {
-                    "l": f"{start}_{i}_{llm}_exp_endpoints-{'_'.join(tags)}",
+            for i in (1, 2, 3):
+                experiments.append({
+                    "l": f"{start}_{llm}_{i}_endpoints-{'_'.join(tags)}",
                     "t": total_time,
                     "tags": tags,
                     "llm": llm,
-                    # "baseline": True,
-                    # "init": True,
-                }
-                print(f"--- Experiment {experiment['l']} ---")
-                main(argv=[], **experiment)
+                })
+
+    for experiment in experiments:
+        print(f"{experiment['l']}")
+
+    input("Press Enter to start the experiments...")
+
+    for experiment in experiments:
+        main(argv=[], **experiment)

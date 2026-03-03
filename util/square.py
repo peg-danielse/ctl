@@ -128,6 +128,9 @@ def apply_yaml_configuration(doc, api_client):
 def reset_k8s(api_client, path = PATH + "/base_config"):
     files = glob.glob(path + "/*.yaml")
     for f in files:
+        # Skip global autoscaler config; it is no longer managed by this system.
+        if os.path.basename(f) == "config-autoscaler.yaml":
+            continue
         config = load_yaml_as_dict(f)
         
         if config is not None:

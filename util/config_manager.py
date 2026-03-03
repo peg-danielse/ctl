@@ -29,6 +29,8 @@ class ConfigManager:
         self.configs: Dict[str, List[Tuple[Optional[datetime], Any]]] = {}
         self.client = square.get_k8s_api_client()
         self.label = label
+        # Last error message from an apply failure (None on success or when skipped).
+        self.last_apply_error: Optional[str] = None
 
         # Use per-experiment config directory if it already has YAMLs; otherwise
         # seed it from the shared base_configuration directory.
@@ -40,6 +42,9 @@ class ConfigManager:
             if not base_config_files:
                 logger.info("Seeding experiment configs from %s", CONFIGURATION_BASE_PATH)
             for config_file in glob.glob(os.path.join(CONFIGURATION_BASE_PATH, "*.yaml")):
+                # Skip global autoscaler config; it is no longer managed by this system.
+                if os.path.basename(config_file) == "config-autoscaler.yaml":
+                    continue
                 dest = os.path.join(experiment_config_dir, os.path.basename(config_file))
                 if not os.path.exists(dest):
                     shutil.copy(config_file, dest)
@@ -55,6 +60,9 @@ class ConfigManager:
             )
 
         for config_file in base_config_files:
+            # Skip global autoscaler config; it is no longer managed by this system.
+            if os.path.basename(config_file) == "config-autoscaler.yaml":
+                continue
             service_name = os.path.basename(config_file).split(".")[0]
             logger.info("Loading base config for service '%s' from %s", service_name, config_file)
             self.load_config(config_file, service_name)
@@ -97,6 +105,8 @@ class ConfigManager:
         """Apply and store a configuration. Returns True if applied, False if skipped (e.g. not in base config).
         service_name may be our base key (e.g. memcached-rate-deployment) or the manifest metadata.name (e.g. memcached-rate).
         """
+        # Reset last error before attempting a new apply.
+        self.last_apply_error = None
         canonical = (
             service_name if service_name in self.base_service_names
             else self._metadata_name_to_base_key.get(service_name)
@@ -112,7 +122,9 @@ class ConfigManager:
         try:
             square.apply_yaml_configuration(config, self.client)
         except Exception as e:
-            print(f"Error applying configuration for {canonical}: {e}")
+            self.last_apply_error = str(e)
+            logger.error("Error applying configuration for '%s': %s", canonical, e)
+            return False
 
         if applied_at is None:
             applied_at = datetime.now(timezone.utc)
@@ -133,20 +145,6 @@ class ConfigManager:
 
     def reset_config(self):
         square.reset_k8s(self.client, CONFIGURATION_BASE_PATH)
-
-    def save_all_configs(self):
-        for service_name in self.configs:
-            for i, (applied_at, config) in enumerate(self.configs[service_name]):
-                config_path = os.path.join(PATH, "output", self.label, "config", f"{service_name}_{i}.yaml")
-                with open(config_path, 'w') as f:
-                    if applied_at is not None:
-                        f.write(f"# applied_at: {applied_at.isoformat()}\n")
-                    yaml.dump(config, f)
-                if applied_at is not None:
-                    meta_path = os.path.join(PATH, "output", self.label, "config", f"{service_name}_{i}.meta.json")
-                    with open(meta_path, 'w') as f:
-                        json.dump({"applied_at": applied_at.isoformat()}, f, indent=2)
-
 
 # Legacy functions for backward compatibility
 def load_yaml_as_string(filepath):
@@ -177,6 +175,10 @@ def setup_experiment_directory(label):
 
     if os.path.isdir(CONFIGURATION_BASE_PATH):
         shutil.copytree(CONFIGURATION_BASE_PATH, experiment_config_dir, dirs_exist_ok=True)
+        # Remove global autoscaler config from per-experiment config directory if present.
+        autoscaler_path = os.path.join(experiment_config_dir, "config-autoscaler.yaml")
+        if os.path.exists(autoscaler_path):
+            os.remove(autoscaler_path)
         print("Base configuration files copied")
     else:
         print(f"No base configuration directory at {CONFIGURATION_BASE_PATH}; not copying.")
