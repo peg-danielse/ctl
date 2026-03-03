@@ -153,48 +153,51 @@ def loadtest(duration, label, phase, tags=None):
     logger.info(f"Pressure test {label}_{phase} for {duration} seconds (tags: {tags})")
 
     # locust --processes 16 -f ./util/locust/hotel-reservations.py -H "http://145.100.135.11:30505" -t 600s --headless --csv mma1 --experiment-type 2 --w-shape 1 --w-mean 5000 --w-user-min 3000 --w-user-max 10000 --w-ls-y 2000 --w-dt 120 --seed 42
-    
     # locust --processes 16 -f ./util/locust/hotel-reservations.py -H "http://145.100.135.11:30505" -t 600s --headless --csv mma1 --experiment-type 1 --a-min 1000 --a-avg 3000 --a-max 8000 --a-n-steps 2 --dt 180
+    # third experiment type: finding the absolute maximum load pattern
+    # fourth experiment type: stressing the scheduler load pattern
+    
+    cmd = [
+        "locust",
+        "--processes", "16",
+        "-f", "./util/locust/hotel-reservations.py",
+        "-H", "http://145.100.135.11:30505",
+        "-t", str(duration) + "s",
+        "--csv", label,
+        "--experiment-type", "1",
+        "--a-min", str(500),
+        "--a-avg", str(1000),
+        "--a-max", str(3000),
+        "--a-n-steps", str(1),
+        "--dt", str(duration / 6),
+        "--headless",
+        "--tags", *tags,
+    ]
+
+    process = None
     try:
-        cmd = [
-            "locust",
-            "--processes", "16",
-            "-f", "./util/locust/hotel-reservations.py",
-            "-H", "http://145.100.135.11:30505",
-            "-t", str(duration) + "s",
-            "--csv", label,
-            "--experiment-type", "1",
-            "--a-min", str(500),
-            "--a-avg", str(1000),
-            "--a-max", str(3000),
-            "--a-n-steps", str(1),
-            "--dt", str(duration / 6),
-            "--headless",
-            "--tags", *tags,
-        ]
-        
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        
-        # Wait for the process to complete
-        stdout, stderr = process.communicate(timeout=duration) 
-        
-        # Save stdout and stderr to files
+        # Ensure output directory exists before starting Locust
         os.makedirs(f"./output/{label}/data", exist_ok=True)
-        with open(f"./output/{label}/data/locust_stdout.txt", "w") as f:
-            f.write(stdout)
-        with open(f"./output/{label}/data/locust_stderr.txt", "w") as f:
-            f.write(stderr)
+        stdout_path = f"./output/{label}/data/locust_stdout.txt"
+        stderr_path = f"./output/{label}/data/locust_stderr.txt"
+
+        # Stream Locust stdout/stderr directly into log files
+        with open(stdout_path, "w") as stdout_f, open(stderr_path, "w") as stderr_f:
+            process = subprocess.Popen(
+                cmd,
+                stdout=stdout_f,
+                stderr=stderr_f,
+                text=True,
+            )
+
+            # Wait for the process to complete; give it a small buffer over the target duration
+            process.wait(timeout=duration + 60)
 
     except subprocess.TimeoutExpired:
         logger.warning(f"Async load test {label} timed out")
-        
-        process.kill()
-        
+        if process is not None:
+            process.kill()
+
     except Exception as e:
         logger.error(f"Error in load test {label}: {e}")
 
