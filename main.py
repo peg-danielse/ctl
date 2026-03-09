@@ -25,6 +25,8 @@ from util.llm_client import (
     task_score_configuration,
     enforce_fixed_replica_policy,
     persist_generated_configuration,
+    start_vllm_server,
+    stop_vllm_server,
 )
 from util.plot import SnapshotPlotter
 
@@ -234,7 +236,13 @@ def get_parser():
     parser.add_argument("-m", type=int, default=10, help="Measurement duration per configuration in minutes.")
     parser.add_argument("-s", type=int, default=5, help="Stabilization time between configurations in minutes.")
     parser.add_argument("-a", type=int, default=16, help="Number of anomalies to process per iteration.")
-    parser.add_argument("-llm", type=str, default="openai", choices=["openai", "gemini", "self-hosted"], help="LLM to use for configuration generation.")
+    parser.add_argument(
+        "-llm",
+        type=str,
+        default="openai",
+        choices=["openai", "gemini", "self-hosted", "vllm"],
+        help="LLM to use for configuration generation.",
+    )
     parser.add_argument("--verbose", action="store_true", help="Enable verbose (DEBUG) logging.")
     parser.add_argument("--baseline", action="store_true", help="Run baseline phase only (no adaptation).")
     parser.add_argument("--tags", nargs="+", default=None,
@@ -331,7 +339,7 @@ def main(argv=None, **kwargs):
         monitoring_thread.join()
 
         # Final move: place label-related outputs into output/{label}/data
-        move_label_outputs(baseline_label)
+        move_label_outputs(baseline_label if baseline_label else label)
 
         logger.critical(f"baseline phase completed for {baseline_label}")
         # Baseline mode: no adaptation phase; exit after baseline.
@@ -508,37 +516,82 @@ def main(argv=None, **kwargs):
     # Final move: place label-related outputs into output/{label}/data
     move_label_outputs(label)
 
+
 if __name__ == "__main__":
     start = datetime.now().strftime("%Y%m%d_%H%M%S")
-    total_time = 180
+    total_time = 60
     tags_list = (["search_hotel", "recommend"], ["search_hotel", "recommend", "reserve", "user_login"])
 
-    experiments = []
+    # # -------------------------------
+    # # Baseline + OpenAI/Gemini experiments
+    # # -------------------------------
+    # experiments: list[dict] = []
 
-    # baseline experiments
-    for tags in tags_list:
-        experiments.append({
-            "l": f"{start}_baseline_endpoints-{'_'.join(tags)}",
-            "t": total_time,
-            "tags": tags,
-            "baseline" : True,
-        })
+    # # baseline experiments
+    # for tags in tags_list:
+    #     experiments.append(
+    #         {
+    #             "l": f"{start}_baseline_endpoints-{'_'.join(tags)}",
+    #             "t": total_time,
+    #             "tags": tags,
+    #             "baseline": True,
+    #         }
+    #     )
 
-    # adaptation experiments
-    for tags in tags_list:
-        for llm in ("gemini","openai"):
-            for i in (1, 2, 3):
-                experiments.append({
-                    "l": f"{start}_{llm}_{i}_endpoints-{'_'.join(tags)}",
-                    "t": total_time,
-                    "tags": tags,
-                    "llm": llm,
-                })
+    # # adaptation experiments with hosted APIs (OpenAI, Gemini)
+    # for tags in tags_list:
+    #     for llm in ("gemini", "openai"):
+    #         for i in (1, 2, 3):
+    #             experiments.append(
+    #                 {
+    #                     "l": f"{start}_{llm}_{i}_endpoints-{'_'.join(tags)}",
+    #                     "t": total_time,
+    #                     "tags": tags,
+    #                     "llm": llm,
+    #                 }
+    #             )
 
-    for experiment in experiments:
-        print(f"{experiment['l']}")
+    # for experiment in experiments:
+    #     print(f"{experiment['l']}")
 
-    print("Press Enter to start the experiments...")
+    # print("Starting the experiments in 20 seconds...")
+    # time.sleep(20)
 
-    for experiment in experiments:
-        main(argv=[], **experiment)
+    # for experiment in experiments:
+    #     main(argv=[], **experiment)
+
+    # -------------------------------
+    # vLLM-backed experiments:
+    #   - For each HF model, start vLLM once,
+    #   - Run several repeated experiments (blocking),
+    #   - Then stop the server before moving to the next model.
+    # -------------------------------
+    vllm_models = [
+        {"name": "Qwen/Qwen3.5-2B", "port": 8000, "short": "qwen35_2b"},
+    ]
+    vllm_repetitions = (1,)
+
+    for model_cfg in vllm_models:
+        model_name = model_cfg["name"]
+        port = model_cfg["port"]
+        short = model_cfg["short"]
+
+        print(f"\n===== Starting vLLM experiments for {model_name} on port {port} =====")
+        proc = start_vllm_server(model_name, port=port)
+        try:
+            for tags in tags_list:
+                for i in vllm_repetitions:
+                    label = f"{start}_vllm_{short}_{i}_endpoints-{'_'.join(tags)}"
+                    experiment = {
+                        "l": label,
+                        "t": total_time,
+                        "tags": tags,
+                        "llm": "vllm",
+                    }
+                    print(label)
+                    main(argv=[], **experiment)
+        finally:
+            stop_vllm_server(proc)
+            print(f"===== Finished vLLM experiments for {model_name} =====")
+
+

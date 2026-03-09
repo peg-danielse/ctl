@@ -3,11 +3,13 @@ import os
 import re
 import threading
 import time
+import subprocess
+import logging
+from typing import Any, Optional
+
 import pandas as pd
 import requests
 import yaml
-import logging
-from typing import Any, Optional
 
 from config import GEN_API_URL, OPENAI_API_KEY, OPENAI_MODEL, GEMINI_API_KEY, GEMINI_MODEL, PATH
 from prompt import GENERATE_PROMPT, GOAL, RESULT_PROMPT, REPAIR_PROMPT
@@ -51,6 +53,10 @@ def _format_snapshot_for_prompt(data: dict) -> str:
 # Configure logging
 logger = logging.getLogger(__name__)
 data_collector = DataCollector.get_instance()
+
+# Global vLLM runtime context (set when we start a vLLM server for a model).
+_current_vllm_model_name: Optional[str] = None
+_current_vllm_port: int = 8000
 
 
 def _load_knowledge_dict(path: str) -> dict:
@@ -305,6 +311,81 @@ def generate_prompt(service_name, trace_df, metric_dfs,
     return prompt
 
 
+def _wait_for_vllm_server(port: int, timeout: int = 60*5) -> None: # 5 minutes
+    """
+    Block until the local vLLM server on the given port responds to /v1/models
+    or raise TimeoutError after `timeout` seconds.
+    """
+    start = time.time()
+    url = f"http://localhost:{port}/v1/models"
+    while True:
+        try:
+            r = requests.get(url, timeout=5)
+            if r.status_code == 200:
+                return
+        except requests.exceptions.RequestException:
+            pass
+        if time.time() - start > timeout:
+            raise TimeoutError(f"vLLM server on port {port} did not start within {timeout} seconds")
+        time.sleep(1)
+
+
+def start_vllm_server(model_name: str, port: int = 8000, extra_args: Optional[list[str]] = None) -> subprocess.Popen:
+    """
+    Start a vLLM server for the given Hugging Face model and block until it is ready.
+
+    Returns the subprocess.Popen handle. Also sets the global vLLM context so that
+    _call_vllm() knows which model/port to talk to.
+    """
+    global _current_vllm_model_name, _current_vllm_port
+
+    cmd = ["vllm", "serve", model_name, "--port", str(port)]
+    if extra_args:
+        cmd.extend(extra_args)
+
+    logger.info("Starting vLLM server for model %s on port %d", model_name, port)
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+
+    try:
+        _wait_for_vllm_server(port)
+        logger.info("vLLM server for model %s is ready on port %d", model_name, port)
+    except Exception:
+        logger.error("Failed to start vLLM server for model %s on port %d", model_name, port)
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except Exception:
+            proc.kill()
+        raise
+
+    _current_vllm_model_name = model_name
+    _current_vllm_port = port
+    return proc
+
+
+def stop_vllm_server(proc: subprocess.Popen, timeout: float = 30.0) -> None:
+    """
+    Stop a vLLM server process started with start_vllm_server.
+    """
+    global _current_vllm_model_name
+    logger.info("Stopping vLLM server (pid=%s)", getattr(proc, "pid", "unknown"))
+    try:
+        proc.terminate()
+        proc.wait(timeout=timeout)
+    except Exception:
+        logger.warning("vLLM server did not terminate cleanly; killing process")
+        try:
+            proc.kill()
+        except Exception:
+            logger.exception("Failed to kill vLLM server process")
+    finally:
+        _current_vllm_model_name = None
+
+
 def call_llm(prompt, llm_type="self-hosted"):
     match (llm_type):
         case "openai":
@@ -313,6 +394,8 @@ def call_llm(prompt, llm_type="self-hosted"):
             return _call_gemini(prompt)
         case "self-hosted":
             return _call_default_llm(prompt)
+        case "vllm":
+            return _call_vllm(prompt)
         case _:
             raise ValueError(f"Invalid LLM type: {llm_type}")
 
@@ -483,6 +566,61 @@ def _call_gemini(messages):
     
     logger.error(f"Unexpected Gemini API response format: {data}")
     return ""
+
+
+def _call_vllm(messages):
+    """
+    Call a locally running vLLM server using the OpenAI-compatible /v1/completions API.
+
+    Assumes that start_vllm_server() has been called for the current model so that
+    _current_vllm_model_name and _current_vllm_port are set.
+    """
+    if not _current_vllm_model_name:
+        logger.error("vLLM called but no current model is set. Did you call start_vllm_server()?")
+        return None
+
+    # Flatten the chat-style messages into a single text prompt, similar to _call_gemini.
+    conversation_text = ""
+    for message in messages:
+        if isinstance(message, list) and len(message) == 2:
+            role, content = message
+            if not isinstance(content, str):
+                content = str(content)
+            conversation_text += f"{role.upper()}: {content}\n\n"
+        else:
+            conversation_text += f"USER: {str(message)}\n\n"
+
+    conversation_text = conversation_text.strip()
+
+    payload = {
+        "model": _current_vllm_model_name,
+        "prompt": conversation_text,
+        "max_tokens": 4096,
+        "temperature": 0.1,
+    }
+
+    url = f"http://localhost:{_current_vllm_port}/v1/completions"
+    logger.debug("Calling vLLM at %s with model %s", url, _current_vllm_model_name)
+    try:
+        response = requests.post(url, json=payload, timeout=120)
+    except requests.exceptions.RequestException as e:
+        logger.error("Error while calling vLLM server: %s", e)
+        return None
+
+    if response.status_code != 200:
+        logger.error("vLLM API error: %s - %s", response.status_code, response.text)
+        return None
+
+    try:
+        data = response.json()
+        choices = data.get("choices") or []
+        if not choices:
+            logger.error("vLLM response has no choices: %s", data)
+            return None
+        return choices[0].get("text", "")
+    except Exception as e:
+        logger.error("Failed to parse vLLM response: %s", e)
+        return None
 
 
 def read_prompt(response: str):
