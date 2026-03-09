@@ -577,7 +577,15 @@ if __name__ == "__main__":
         short = model_cfg["short"]
 
         print(f"\n===== Starting vLLM experiments for {model_name} on port {port} =====")
-        proc = start_vllm_server(model_name, port=port)
+        proc = start_vllm_server(model_name, port=port, venv_path="/home/paul/vllm-env")
+
+        print(proc)
+        time.sleep(100)
+        
+        stop_vllm_server(proc)
+        print("stopped vLLM server")
+        quit()
+        
         try:
             for tags in tags_list:
                 for i in vllm_repetitions:

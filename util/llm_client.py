@@ -311,7 +311,7 @@ def generate_prompt(service_name, trace_df, metric_dfs,
     return prompt
 
 
-def _wait_for_vllm_server(port: int, timeout: int = 60*5) -> None: # 5 minutes
+def _wait_for_vllm_server(port: int, timeout: int = 60 * 5) -> None:  # 5 minutes
     """
     Block until the local vLLM server on the given port responds to /v1/models
     or raise TimeoutError after `timeout` seconds.
@@ -330,16 +330,37 @@ def _wait_for_vllm_server(port: int, timeout: int = 60*5) -> None: # 5 minutes
         time.sleep(1)
 
 
-def start_vllm_server(model_name: str, port: int = 8000, extra_args: Optional[list[str]] = None) -> subprocess.Popen:
+def start_vllm_server(
+    model_name: str,
+    port: int = 8000,
+    extra_args: Optional[list[str]] = None,
+    venv_path: Optional[str] = None,
+) -> subprocess.Popen:
     """
     Start a vLLM server for the given Hugging Face model and block until it is ready.
+
+    If `venv_path` is provided, the vLLM binary from that virtualenv is used
+    (i.e. `<venv_path>/bin/vllm`); otherwise, `vllm` is resolved from PATH.
 
     Returns the subprocess.Popen handle. Also sets the global vLLM context so that
     _call_vllm() knows which model/port to talk to.
     """
     global _current_vllm_model_name, _current_vllm_port
 
-    cmd = ["vllm", "serve", model_name, "--port", str(port)]
+    # Determine vLLM executable: use the specified virtualenv if provided.
+    vllm_executable = "vllm"
+    if venv_path:
+        candidate = os.path.join(venv_path, "bin", "vllm")
+        if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+            vllm_executable = candidate
+        else:
+            logger.warning(
+                "Requested vLLM venv '%s' but no executable found at '%s'; falling back to 'vllm' on PATH",
+                venv_path,
+                candidate,
+            )
+
+    cmd = [vllm_executable, "serve", model_name, "--port", str(port)]
     if extra_args:
         cmd.extend(extra_args)
 
