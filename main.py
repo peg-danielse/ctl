@@ -567,9 +567,13 @@ if __name__ == "__main__":
     #   - Then stop the server before moving to the next model.
     # -------------------------------
     vllm_models = [
+        {"name": "Qwen/Qwen3.5-0.8B", "port": 8000, "short": "qwen35_08b"},
         {"name": "Qwen/Qwen3.5-2B", "port": 8000, "short": "qwen35_2b"},
+        {"name": "Qwen/Qwen3.5-4B", "port": 8000, "short": "qwen35_4b"},
+        {"name": "Qwen/Qwen3.5-9B", "port": 8000, "short": "qwen35_9b"},
+        {"name": "Qwen/Qwen3.5-27B", "port": 8000, "short": "qwen35_27b"},
     ]
-    vllm_repetitions = (1,)
+    vllm_repetitions = (1,2,3,)
 
     for model_cfg in vllm_models:
         model_name = model_cfg["name"]
@@ -579,13 +583,6 @@ if __name__ == "__main__":
         print(f"\n===== Starting vLLM experiments for {model_name} on port {port} =====")
         proc = start_vllm_server(model_name, port=port, venv_path="/home/paul/vllm-env")
 
-        print(proc)
-        time.sleep(100)
-        
-        stop_vllm_server(proc)
-        print("stopped vLLM server")
-        quit()
-        
         try:
             for tags in tags_list:
                 for i in vllm_repetitions:
