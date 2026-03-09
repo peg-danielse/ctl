@@ -169,7 +169,7 @@ def loadtest(duration, label, phase, tags=None):
         "--a-avg", str(1000),
         "--a-max", str(3000),
         "--a-n-steps", str(1),
-        "--dt", str(duration / 6),
+        "--dt", str(int(duration / 6)),
         "--headless",
         "--tags", *tags,
     ]
@@ -521,7 +521,7 @@ if __name__ == "__main__":
             "l": f"{start}_baseline_endpoints-{'_'.join(tags)}",
             "t": total_time,
             "tags": tags,
-            "basline" : True,
+            "baseline" : True,
         })
 
     # adaptation experiments
