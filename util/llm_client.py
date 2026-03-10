@@ -633,7 +633,7 @@ def _call_vllm(messages):
     url = f"http://localhost:{_current_vllm_port}/v1/completions"
     logger.debug("Calling vLLM at %s with model %s", url, _current_vllm_model_name)
     try:
-        response = requests.post(url, json=payload, timeout=120)
+        response = requests.post(url, json=payload, timeout=300) # 5 minutes
     except requests.exceptions.RequestException as e:
         logger.error("Error while calling vLLM server: %s", e)
         return None
