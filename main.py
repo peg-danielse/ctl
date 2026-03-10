@@ -519,7 +519,7 @@ def main(argv=None, **kwargs):
 
 if __name__ == "__main__":
     start = datetime.now().strftime("%Y%m%d_%H%M%S")
-    total_time = 60
+    total_time = 180
     tags_list = (["search_hotel", "recommend"], ["search_hotel", "recommend", "reserve", "user_login"])
 
     # # -------------------------------
