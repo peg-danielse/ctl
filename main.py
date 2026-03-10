@@ -567,11 +567,11 @@ if __name__ == "__main__":
     #   - Then stop the server before moving to the next model.
     # -------------------------------
     vllm_models = [
-        {"name": "Qwen/Qwen3.5-0.8B", "port": 8000, "short": "qwen35_08b"},
+        # {"name": "Qwen/Qwen3.5-0.8B", "port": 8000, "short": "qwen35_08b"},
         {"name": "Qwen/Qwen3.5-2B", "port": 8000, "short": "qwen35_2b"},
         {"name": "Qwen/Qwen3.5-4B", "port": 8000, "short": "qwen35_4b"},
         {"name": "Qwen/Qwen3.5-9B", "port": 8000, "short": "qwen35_9b"},
-        {"name": "Qwen/Qwen3.5-27B", "port": 8000, "short": "qwen35_27b"},
+        # {"name": "Qwen/Qwen3.5-27B-FP8", "port": 8000, "short": "qwen35_27b-fp8"},
     ]
     vllm_repetitions = (1,2,3,)
 
