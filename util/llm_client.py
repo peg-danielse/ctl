@@ -1,5 +1,6 @@
 import datetime
 import os
+from pickle import TRUE
 import re
 import threading
 import time
@@ -360,7 +361,16 @@ def start_vllm_server(
                 candidate,
             )
 
-    cmd = [vllm_executable, "serve", model_name, "--port", str(port)]
+    # vLLM server arguments for L40S testbed
+    cmd = [vllm_executable, "serve", model_name, 
+    "--port", str(port), 
+    "--max-model-len", "32768",
+    # "--gpu-memory-utilization", "0.95",
+    # "--max-num-batched-tokens", "8192",
+    # "--max-num-seqs", "16",
+    "--enforce-eager", 
+    # "--enable-prefix-caching",
+    ]
     if extra_args:
         cmd.extend(extra_args)
 
