@@ -312,7 +312,7 @@ def generate_prompt(service_name, trace_df, metric_dfs,
     return prompt
 
 
-def _wait_for_vllm_server(port: int, timeout: int = 60 * 5) -> None:  # 5 minutes
+def _wait_for_vllm_server(port: int, timeout: int = 60 * 10) -> None:  # 5 minutes
     """
     Block until the local vLLM server on the given port responds to /v1/models
     or raise TimeoutError after `timeout` seconds.
