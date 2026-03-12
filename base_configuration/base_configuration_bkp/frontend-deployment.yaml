@@ -31,7 +31,7 @@ spec:
           env:
           - name: DLOG
             value: DEBUG
-          image: ghcr.io/peg-danielse/hotel-reservations:latest
+          image: pag3r/hotel-reservations:latest
           name: hotel-reserv-frontend
           ports:
             - containerPort: 5000
