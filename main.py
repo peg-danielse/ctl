@@ -522,10 +522,10 @@ if __name__ == "__main__":
     total_time = 180
     tags_list = (["search_hotel", "recommend"], ["search_hotel", "recommend", "reserve", "user_login"])
 
-    # # -------------------------------
-    # # Baseline + OpenAI/Gemini experiments
-    # # -------------------------------
-    # experiments: list[dict] = []
+    # -------------------------------
+    # Baseline + OpenAI/Gemini experiments
+    # -------------------------------
+    experiments: list[dict] = []
 
     # baseline experiments
     for tags in tags_list:
@@ -538,21 +538,21 @@ if __name__ == "__main__":
             }
         )
 
-     # adaptation experiments with hosted APIs (OpenAI, Gemini)
+    # adaptation experiments with hosted APIs (OpenAI, Gemini)
     for tags in tags_list:
         for llm in ("gemini", "openai"):
             for i in (1, 2, 3):
                 experiments.append(
                     {
-                         "l": f"{start}_{llm}_{i}_endpoints-{'_'.join(tags)}",
-                         "t": total_time,
-                         "tags": tags,
-                         "llm": llm,
+                        "l": f"{start}_{llm}_{i}_endpoints-{'_'.join(tags)}",
+                        "t": total_time,
+                        "tags": tags,
+                        "llm": llm,
                     }
                 )
 
     for experiment in experiments:
-         print(f"{experiment['l']}")
+        print(f"{experiment['l']}")
 
     print("Starting the experiments in 20 seconds...")
     time.sleep(20)

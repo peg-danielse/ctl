@@ -381,65 +381,65 @@ def perform_shap_anomaly_detection(trace_df):
             shapes, names = shap_decisions(iso_forest, anom_features)
 
             for s, ai in zip(shapes, anomaly_indices):
-            # Get duration and skip anomalies with duration < 2 seconds (same as get_kpi_list)
-            duration = pd.to_timedelta(trace_df.loc[ai, "total"], unit="us")
-            timestamp = trace_df.loc[ai, "startTime"]
-            
-            # Get the 2 most negative SHAP values (same as get_kpi_list)
-            values = heapq.nsmallest(2, enumerate(s), key=itemgetter(1))
-            
-            # Find the primary service using the same logic as get_kpi_list
-            primary_service = None
-            top_contributors = []
-            
-            for v in values:
-                feature_name = names[v[0]]
-                shap_value = v[1]
+                # Get duration and skip anomalies with duration < 2 seconds (same as get_kpi_list)
+                duration = pd.to_timedelta(trace_df.loc[ai, "total"], unit="us")
+                timestamp = trace_df.loc[ai, "startTime"]
                 
-                # Skip certain features (same as get_kpi_list)
-                if feature_name in ['mongo_rate']:
-                    continue
+                # Get the 2 most negative SHAP values (same as get_kpi_list)
+                values = heapq.nsmallest(2, enumerate(s), key=itemgetter(1))
+                
+                # Find the primary service using the same logic as get_kpi_list
+                primary_service = None
+                top_contributors = []
+                
+                for v in values:
+                    feature_name = names[v[0]]
+                    shap_value = v[1]
+                    
+                    # Skip certain features (same as get_kpi_list)
+                    if feature_name in ['mongo_rate']:
+                        continue
 
-                # Map feature to service using SPAN_PROCESS_MAP and os.path.basename (same as get_kpi_list)
-                if feature_name in SPAN_PROCESS_MAP:
-                    service_name = os.path.basename(SPAN_PROCESS_MAP[feature_name])
-                    if primary_service is None:  # Use the first valid service as primary
-                        primary_service = service_name
+                    # Map feature to service using SPAN_PROCESS_MAP and os.path.basename (same as get_kpi_list)
+                    if feature_name in SPAN_PROCESS_MAP:
+                        service_name = os.path.basename(SPAN_PROCESS_MAP[feature_name])
+                        if primary_service is None:  # Use the first valid service as primary
+                            primary_service = service_name
+                        
+                        top_contributors.append({'feature': feature_name, 'shap_value': float(shap_value)})
+                        
+                        # Count anomalies per service (same as get_kpi_list)
+                        service_anomaly_count[service_name] = service_anomaly_count.get(service_name, 0) + 1
                     
-                    top_contributors.append({'feature': feature_name, 'shap_value': float(shap_value)})
-                    
-                    # Count anomalies per service (same as get_kpi_list)
-                    service_anomaly_count[service_name] = service_anomaly_count.get(service_name, 0) + 1
+                    break  # Only process the first valid contributor (same as get_kpi_list)
                 
-                break  # Only process the first valid contributor (same as get_kpi_list)
-            
-            if primary_service is None:
-                continue
-            
-            # Store anomaly information 
-            anomaly_info = {
-                'index': int(ai),
-                'trace_id': trace_df.loc[ai, 'id'] if 'id' in trace_df.columns else None,
-                'pattern': trace_df.loc[ai, 'pattern'] if 'pattern' in trace_df.columns else None,
-                'response_time': trace_df.loc[ai, 'total'] if 'total' in trace_df.columns else None,
-                'timestamp': timestamp,
-                'duration_seconds': duration.total_seconds(),
-                'service': primary_service
-            }
-            
-            # Group anomalies by service
-            if primary_service not in anomalies_by_service:
-                anomalies_by_service[primary_service] = []
-            anomalies_by_service[primary_service].append(anomaly_info)
-            
-            # Aggregate contributions for overall analysis
-            for contrib in top_contributors:
-                feature_name = contrib['feature']
-                shap_value = contrib['shap_value']
-                if feature_name not in shap_contributions:
-                    shap_contributions[feature_name] = {'count': 0, 'total_contribution': 0.0}
-                shap_contributions[feature_name]['count'] += 1
-                shap_contributions[feature_name]['total_contribution'] += abs(shap_value)
+                if primary_service is None:
+                    continue
+                
+                # Store anomaly information 
+                anomaly_info = {
+                    'index': int(ai),
+                    'trace_id': trace_df.loc[ai, 'id'] if 'id' in trace_df.columns else None,
+                    'pattern': trace_df.loc[ai, 'pattern'] if 'pattern' in trace_df.columns else None,
+                    'response_time': trace_df.loc[ai, 'total'] if 'total' in trace_df.columns else None,
+                    'timestamp': timestamp,
+                    'duration_seconds': duration.total_seconds(),
+                    'service': primary_service
+                }
+                
+                # Group anomalies by service
+                if primary_service not in anomalies_by_service:
+                    anomalies_by_service[primary_service] = []
+                anomalies_by_service[primary_service].append(anomaly_info)
+                
+                # Aggregate contributions for overall analysis
+                for contrib in top_contributors:
+                    feature_name = contrib['feature']
+                    shap_value = contrib['shap_value']
+                    if feature_name not in shap_contributions:
+                        shap_contributions[feature_name] = {'count': 0, 'total_contribution': 0.0}
+                    shap_contributions[feature_name]['count'] += 1
+                    shap_contributions[feature_name]['total_contribution'] += abs(shap_value)
         
         # Calculate average contributions
         for feature_name in shap_contributions:
