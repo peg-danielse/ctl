@@ -6,13 +6,13 @@ metadata:
     kompose.version: 1.22.0 (955b78124)
   creationTimestamp: null
   labels:
-    io.kompose.service: frontend
-  name: frontend
+    io.kompose.service: jaeger
+  name: jaeger
 spec:
   replicas: 1
   selector:
     matchLabels:
-      io.kompose.service: frontend
+      io.kompose.service: jaeger
   strategy: {}
   template:
     metadata:
@@ -23,18 +23,23 @@ spec:
         sidecar.istio.io/statsInclusionRegexps: http.*
       creationTimestamp: null
       labels:
-        io.kompose.service: frontend
+        io.kompose.service: jaeger
     spec:
       containers:
-        - command:
-            - frontend
-          env:
-          - name: DLOG
-            value: DEBUG
-          image: ghcr.io/peg-danielse/hotel-reservations:latest
-          name: hotel-reserv-frontend
+        - image: jaegertracing/all-in-one:1.62.0
+          name: hotel-reserv-jaeger
           ports:
-            - containerPort: 5000
+            - containerPort: 14269
+            - containerPort: 5778
+            - containerPort: 14268
+            - containerPort: 14267
+            - containerPort: 16686
+            - containerPort: 5775
+              protocol: UDP
+            - containerPort: 6831
+              protocol: UDP
+            - containerPort: 6832
+              protocol: UDP
           resources:
             requests:
               cpu: 100m

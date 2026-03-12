@@ -336,6 +336,7 @@ def start_vllm_server(
     port: int = 8000,
     extra_args: Optional[list[str]] = None,
     venv_path: Optional[str] = None,
+    log_label: Optional[str] = None,
 ) -> subprocess.Popen:
     """
     Start a vLLM server for the given Hugging Face model and block until it is ready.
@@ -374,11 +375,30 @@ def start_vllm_server(
     if extra_args:
         cmd.extend(extra_args)
 
+    # Determine where to log vLLM stdout/stderr. Mirror Locust behavior by
+    # writing into an experiment-style data folder when a label is provided.
+    try:
+        if log_label:
+            data_dir = os.path.join(PATH, "output", log_label, "data")
+        else:
+            # Fallback: per-model shared log directory.
+            safe_model = model_name.replace("/", "_").replace(":", "_")
+            data_dir = os.path.join(PATH, "output", f"vllm_{safe_model}", "data")
+        os.makedirs(data_dir, exist_ok=True)
+        stdout_path = os.path.join(data_dir, "vllm_stdout.txt")
+        stderr_path = os.path.join(data_dir, "vllm_stderr.txt")
+        stdout_f = open(stdout_path, "a")
+        stderr_f = open(stderr_path, "a")
+    except Exception as e:
+        logger.error("Failed to prepare vLLM log files; falling back to PIPE: %s", e)
+        stdout_f = subprocess.PIPE
+        stderr_f = subprocess.STDOUT
+
     logger.info("Starting vLLM server for model %s on port %d", model_name, port)
     proc = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stdout=stdout_f,
+        stderr=stderr_f,
     )
 
     try:
@@ -627,13 +647,13 @@ def _call_vllm(messages):
         "model": _current_vllm_model_name,
         "prompt": conversation_text,
         "max_tokens": 4096,
-        "temperature": 0.1,
+        "temperature": 0.2,
     }
 
     url = f"http://localhost:{_current_vllm_port}/v1/completions"
     logger.debug("Calling vLLM at %s with model %s", url, _current_vllm_model_name)
     try:
-        response = requests.post(url, json=payload, timeout=300) # 5 minutes
+        response = requests.post(url, json=payload, timeout=600) # 10 minutes
     except requests.exceptions.RequestException as e:
         logger.error("Error while calling vLLM server: %s", e)
         return None
