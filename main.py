@@ -528,15 +528,15 @@ if __name__ == "__main__":
     experiments: list[dict] = []
 
     # baseline experiments
-    for tags in tags_list:
-        experiments.append(
-            {
-                "l": f"{start}_baseline_endpoints-{'_'.join(tags)}",
-                "t": total_time,
-                "tags": tags,
-                "baseline": True,
-            }
-        )
+    #for tags in tags_list:
+    #    experiments.append(
+    #        {
+    #            "l": f"{start}_baseline_endpoints-{'_'.join(tags)}",
+    #            "t": total_time,
+    #            "tags": tags,
+    #            "baseline": True,
+    #        }
+    #    )
 
     # adaptation experiments with hosted APIs (OpenAI, Gemini)
     for tags in tags_list:

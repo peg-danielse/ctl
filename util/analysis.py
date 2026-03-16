@@ -79,13 +79,13 @@ def _load_training_traces():
         return _training_traces_df
 
     # csv_path = os.path.join(PATH, "anomaly_detection", "training-set.csv")
-    json_path = os.path.join(PATH, "anomaly_detection", "traces-1773309835585-1000u.json")
+    json_path = os.path.join(PATH, "anomaly_detection", "traces-1000u-refined.json")
 
     # if os.path.exists(csv_path):
     #     logger.info(f"Loading training traces from CSV: {csv_path}")
     #     df = pd.read_csv(csv_path)
     # else:
-    #     logger.info(f"Training traces CSV not found, falling back to JSON: {json_path}")
+    logger.info(f"Loading training traces found: {json_path}")
     df = read_traces(json_path)
 
     # Ensure patterns exist if span columns are present.
