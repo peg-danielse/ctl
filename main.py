@@ -282,7 +282,8 @@ def main(argv=None, **kwargs):
     os.makedirs(f"./output/{label}/data", exist_ok=True)
     
     # Configure logging
-    log_level = logging.DEBUG if getattr(args, "verbose", False) else logging.INFO
+    # log_level = logging.DEBUG if getattr(args, "verbose", False) else logging.INFO
+    log_level = logging.DEBUG
     logging.basicConfig(
         level=log_level,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',

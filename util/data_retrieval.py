@@ -11,7 +11,7 @@ import argparse
 import logging
 from typing import Any, Dict, Optional, cast
 from datetime import datetime, timedelta, timezone
-from util.analysis import metric_snapshot
+from util.analysis import metric_snapshot, align_traces_to_training_schema
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -48,12 +48,12 @@ def convert_trace_data_to_dataframe(trace_data):
     if trace_df.empty:
         return pd.DataFrame(columns=pd.Index(["id", "startTime", "total", "pattern"]))
     
-    # create trace patterns.
-    span_cols = trace_df.columns.difference(['id', 'startTime', 'total'])
-    trace_df["pattern"] = trace_df[span_cols].gt(0).astype(int).astype(str).agg("".join, axis=1)
-
     # convert times
     trace_df["startTime"] = pd.to_datetime(trace_df['startTime'], unit='us')
+
+    # Align live traces to the training schema so that span columns and
+    # patterns match the training distribution.
+    trace_df = align_traces_to_training_schema(trace_df)
 
     return trace_df
 
@@ -572,7 +572,7 @@ class DataCollector:
             # Attempt 1: start/end with padded window for the requested service
             params = {
                 'service': service_name,
-                'limit': '20000',  # Increased from 5000
+                'limit': '1000',  # Increased from 5000
                 'start': start_us_padded,
                 'end': end_us_padded,
             }
@@ -581,8 +581,8 @@ class DataCollector:
             data = resp.json()
             if data.get('data'):
                 trace_count = len(data.get('data', []))
-                if trace_count >= 20000:
-                    logger.warning(f"Hit limit of 20000 traces for window {start_time} -> {end_time}. Some traces may be missing.")
+                if trace_count >= 1000:
+                    logger.warning(f"Hit limit of 1000 traces for window {start_time} -> {end_time}. Some traces may be missing.")
                 return save_and_return(data, save)
             
             # Attempt 2: retry using lookback semantics if no data (only if service_name specified)

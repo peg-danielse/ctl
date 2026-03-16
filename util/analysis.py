@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 # Cached training traces for anomaly detection / deadline thresholds
 _training_traces_df = None
+iso_forest = None
+iso_forest_features = None
 
 # read stat history
 def read_history(label, base_label):
@@ -58,13 +60,84 @@ def read_traces(path):
 
     # fill NaN
     trace_df = pd.DataFrame(rows).fillna(0)
-    
-    # create trace patterns.
-    span_cols = trace_df.columns.difference(['id'])
-    trace_df["pattern"] = trace_df[span_cols].gt(0).astype(int).astype(str).agg("".join, axis=1)
 
     # convert times
     trace_df["startTime"] = pd.to_datetime(trace_df['startTime'], unit='us')
+
+    # compute binary pattern in a shared, consistent way
+    trace_df = compute_trace_pattern(trace_df)
+
+    return trace_df
+
+
+def compute_trace_pattern(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute the binary pattern column from span-duration columns in a
+    consistent way for both training traces and live traces.
+
+    We treat span columns as all columns except id/startTime/total/pattern.
+    """
+    if df is None or df.empty:
+        return df
+
+    span_cols = df.columns.difference(["id", "startTime", "total", "pattern"])
+    if not len(span_cols):
+        logger.debug("compute_trace_pattern: no span columns found, returning original dataframe")
+        return df
+
+    df = df.copy()
+    df["pattern"] = df[span_cols].gt(0).astype(int).astype(str).agg("".join, axis=1)
+    return df
+
+
+def align_traces_to_training_schema(trace_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Align span feature columns in a live trace dataframe to match the
+    training traces schema, so that patterns are comparable.
+    - Uses the same span columns as the cached training traces.
+    - Adds missing span columns as 0.
+    - Drops extra span columns that don't exist in training.
+    - Recomputes the binary pattern string over the aligned span columns.
+    """
+    training_df = _load_training_traces()
+    # In training traces, span columns are everything except id/startTime/total.
+    train_span_cols = training_df.columns.difference(["id", "startTime", "total", "pattern"])
+    logger.debug(
+        "align_traces_to_training_schema: training span columns (%d): %s",
+        len(train_span_cols),
+        list(train_span_cols),
+    )
+
+    # Ensure all training span columns exist in the live dataframe.
+    for col in train_span_cols:
+        if col not in trace_df.columns:
+            trace_df[col] = 0
+
+    # Drop extra span columns that are not part of the training schema.
+    live_span_cols = trace_df.columns.difference(["id", "startTime", "total", "pattern"])
+    extra_cols = [c for c in live_span_cols if c not in list(train_span_cols)]
+    if extra_cols:
+        logger.debug(
+            "align_traces_to_training_schema: dropping extra live span columns: %s",
+            extra_cols,
+        )
+        trace_df = trace_df.drop(columns=extra_cols)
+
+    # Reorder columns so that span columns follow the training order.
+    span_cols = list(train_span_cols)
+    front_cols = ["id", "startTime", "total"]
+    ordered_cols = [c for c in front_cols if c in trace_df.columns] + span_cols
+    remaining = [c for c in trace_df.columns if c not in ordered_cols]
+    trace_df = trace_df[ordered_cols + remaining]
+
+    # Recompute pattern using the shared helper so semantics
+    # stay identical to training traces.
+    trace_df = compute_trace_pattern(trace_df)
+    if "pattern" in trace_df.columns:
+        logger.debug(
+            "align_traces_to_training_schema: unique live patterns after alignment: %s",
+            trace_df["pattern"].unique(),
+        )
 
     return trace_df
 
@@ -78,23 +151,18 @@ def _load_training_traces():
     if _training_traces_df is not None:
         return _training_traces_df
 
-    # csv_path = os.path.join(PATH, "anomaly_detection", "training-set.csv")
     json_path = os.path.join(PATH, "anomaly_detection", "traces-1000u-refined.json")
 
-    # if os.path.exists(csv_path):
-    #     logger.info(f"Loading training traces from CSV: {csv_path}")
-    #     df = pd.read_csv(csv_path)
-    # else:
     logger.info(f"Loading training traces found: {json_path}")
     df = read_traces(json_path)
 
-    # Ensure patterns exist if span columns are present.
-    if "pattern" not in df.columns and "id" in df.columns:
-        span_cols = df.columns.difference(["id"])
-        df["pattern"] = df[span_cols].gt(0).astype(int).astype(str).agg("".join, axis=1)
+    # Ensure patterns exist and are computed with the same semantics
+    # as for live traces.
+    df = compute_trace_pattern(df)
 
     _training_traces_df = df
     return _training_traces_df
+
 
 def read_metrics(label, base_label):
     metrics = {}
@@ -122,11 +190,76 @@ def shap_decisions(iso_forest, features):
 
     return shap_values, features.columns.tolist()
 
+
+def label_anomalies_with_isolation_forest(trace_df, pretrained_features=None):
+    """
+    Train an IsolationForest on numeric trace features, compute anomaly labels,
+    and return a boolean mask for anomalies.
+
+    This is a port of the helper from `analysis/10-training-trace/trace-analysis.py`
+    so that anomaly detection semantics stay consistent across scripts.
+    """
+    if trace_df is None or trace_df.empty:
+        return np.array([], dtype=bool), None, []
+
+    feature_columns = trace_df.select_dtypes(include=["number"]).columns.tolist()
+
+    if not feature_columns:
+        return np.zeros(len(trace_df), dtype=bool), None, []
+
+    if "pattern" not in trace_df.columns:
+        patterns = [None]
+    else:
+        patterns = list(trace_df["pattern"].unique())
+
+    anomaly_mask = np.zeros(len(trace_df), dtype=bool)
+
+    for pattern in patterns:
+        if pattern is None:
+            df_pat = trace_df
+        else:
+            df_pat = trace_df[trace_df["pattern"] == pattern]
+
+        if df_pat.empty:
+            continue
+
+        feat_pat = df_pat[feature_columns].select_dtypes(include=["number"]).copy()
+
+        if pretrained_features is not None and not pretrained_features.empty:
+            train_df = pretrained_features.select_dtypes(include=["number"]).copy()
+            if "pattern" in pretrained_features.columns and pattern is not None:
+                train_df = pretrained_features[pretrained_features["pattern"] == pattern]
+                train_df = train_df.select_dtypes(include=["number"]).copy()
+
+            common_cols = [c for c in feat_pat.columns if c in train_df.columns]
+            if common_cols:
+                train_df = train_df[common_cols]
+                feat_use = feat_pat[common_cols]
+            else:
+                train_df = feat_pat
+                feat_use = feat_pat
+        else:
+            train_df = feat_pat
+            feat_use = feat_pat
+
+        if train_df.empty or feat_use.empty:
+            continue
+
+        iso = IsolationForest(contamination=0.01, random_state=42)
+        iso.fit(train_df)
+
+        preds = iso.predict(feat_use)
+        anomaly_mask[df_pat.index] = preds == -1
+
+    return anomaly_mask, None, []
+
+
 def metric_snapshot(trace_df, metric_dfs, phase=None, subphase=None):
     # Create a metric snapshot for a specific service and time period.
     timestamp = datetime.now().astimezone(timezone.utc)
     
     try:
+        logger.debug("metric_snapshot: starting with %d traces", 0 if trace_df is None else len(trace_df))
         response_times = pd.to_numeric(trace_df['total'], errors='coerce')
         duration = response_times.mean() if not response_times.empty else 0
         total_requests = len(trace_df)
@@ -141,12 +274,18 @@ def metric_snapshot(trace_df, metric_dfs, phase=None, subphase=None):
     # Calculate per-pattern deadline miss rates
     pattern_miss_rates = calculate_pattern_miss_rates(trace_df)
     if pattern_miss_rates:
+        logger.debug("metric_snapshot: pattern_miss_rates keys: %s", list(pattern_miss_rates.keys()))
         overall_miss_rate = sum(e['miss_rate'] for e in pattern_miss_rates.values()) / len(pattern_miss_rates)
     else:
         overall_miss_rate = 0
     
     # Perform SHAP anomaly detection
     anomaly_results = perform_shap_anomaly_detection(trace_df)
+    logger.info(
+        "metric_snapshot: anomaly_count=%d, services_with_anomalies=%s",
+        anomaly_results.get('anomaly_count', 0),
+        list(anomaly_results.get('anomalies_by_service', {}).keys()),
+    )
     
     # Calculate overall pattern stats using 65th percentile (same as individual patterns)
     
@@ -251,6 +390,7 @@ def metric_snapshot(trace_df, metric_dfs, phase=None, subphase=None):
     
     return snapshot, anomaly_results
 
+
 def calculate_pattern_miss_rates(trace_df):
     if trace_df is None or trace_df.empty or 'pattern' not in trace_df.columns or 'total' not in trace_df.columns:
         logger.error("Error in calculate_pattern_miss_rates: trace_df is None or empty or 'pattern' or 'total' not in trace_df.columns")
@@ -306,9 +446,7 @@ def perform_shap_anomaly_detection(trace_df):
         
         # Prepare features for anomaly detection (exclude non-numeric columns)
         feature_columns = trace_df.select_dtypes(include=["number"]).columns.tolist()
-        # Remove 'total' column as it's the target, not a feature
-        if 'total' in feature_columns:
-            feature_columns.remove('total')
+        logger.debug("perform_shap_anomaly_detection: initial numeric feature columns: %s", feature_columns)
 
         if not feature_columns:
             return {
@@ -320,6 +458,11 @@ def perform_shap_anomaly_detection(trace_df):
         # Load training traces once so we can build per-pattern models from
         # the corresponding training distribution.
         training_df = _load_training_traces()
+        if "pattern" in training_df.columns:
+            logger.debug(
+                "perform_shap_anomaly_detection: training patterns (sample up to 20): %s",
+                training_df["pattern"].unique()[:20],
+            )
 
         service_anomaly_count = {}
         anomalies_by_service = {}
@@ -330,6 +473,7 @@ def perform_shap_anomaly_detection(trace_df):
             patterns = trace_df['pattern'].unique()
         else:
             patterns = [None]
+        logger.debug("perform_shap_anomaly_detection: patterns found: %s", patterns)
 
         for pattern in patterns:
             if pattern is None:
@@ -338,14 +482,36 @@ def perform_shap_anomaly_detection(trace_df):
                 df_pat = trace_df[trace_df['pattern'] == pattern]
 
             if df_pat.empty:
+                logger.debug("perform_shap_anomaly_detection: pattern %s has empty df_pat; skipping", pattern)
                 continue
+
+            logger.debug(
+                "perform_shap_anomaly_detection: pattern %s has %d traces before IF",
+                pattern, len(df_pat)
+            )
 
             features_pat = df_pat[feature_columns].copy()
 
             # Determine training data for this pattern.
             train_pat = training_df.copy()
             if 'pattern' in training_df.columns and pattern is not None:
-                train_pat = training_df[training_df['pattern'] == pattern]
+                filtered = training_df[training_df['pattern'] == pattern]
+                if not filtered.empty:
+                    train_pat = filtered
+                    logger.debug(
+                        "perform_shap_anomaly_detection: using %d training traces for pattern %s",
+                        len(train_pat),
+                        pattern,
+                    )
+                else:
+                    # No training traces for this pattern; fall back to using
+                    # the current pattern's traces as the training distribution.
+                    logger.debug(
+                        "perform_shap_anomaly_detection: no training traces for pattern %s; "
+                        "using current traces as training data",
+                        pattern,
+                    )
+                    train_pat = df_pat
 
             train_pat = train_pat.select_dtypes(include=["number"]).copy()
             features_pat = features_pat.select_dtypes(include=["number"]).copy()
@@ -361,6 +527,10 @@ def perform_shap_anomaly_detection(trace_df):
                 features_use = features_pat
 
             if train_use.empty or features_use.empty:
+                logger.debug(
+                    "perform_shap_anomaly_detection: pattern %s has empty train/features after alignment; skipping",
+                    pattern,
+                )
                 continue
 
             iso_forest = IsolationForest(contamination=0.01, random_state=42)
@@ -370,6 +540,11 @@ def perform_shap_anomaly_detection(trace_df):
 
             # Find anomalies within this pattern
             anomaly_mask_pat = anomaly_predictions == -1
+            num_anom = int(anomaly_mask_pat.sum())
+            logger.info(
+                "perform_shap_anomaly_detection: pattern %s => %d anomalies from IF (out of %d)",
+                pattern, num_anom, len(df_pat),
+            )
             if not anomaly_mask_pat.any():
                 continue
 
@@ -380,8 +555,9 @@ def perform_shap_anomaly_detection(trace_df):
             anom_features = features_use.loc[anomaly_mask_pat]
             shapes, names = shap_decisions(iso_forest, anom_features)
 
+            dropped_no_service = 0
+
             for s, ai in zip(shapes, anomaly_indices):
-                # Get duration and skip anomalies with duration < 2 seconds (same as get_kpi_list)
                 duration = pd.to_timedelta(trace_df.loc[ai, "total"], unit="us")
                 timestamp = trace_df.loc[ai, "startTime"]
                 
@@ -414,6 +590,7 @@ def perform_shap_anomaly_detection(trace_df):
                     break  # Only process the first valid contributor (same as get_kpi_list)
                 
                 if primary_service is None:
+                    dropped_no_service += 1
                     continue
                 
                 # Store anomaly information 
@@ -450,8 +627,13 @@ def perform_shap_anomaly_detection(trace_df):
         for service in anomalies_by_service:
             anomalies_by_service[service].sort(key=lambda x: x['response_time'], reverse=True)
         
-        # Calculate total anomaly count (only counting anomalies > 2 seconds)
+        # Calculate total anomaly count
         total_anomaly_count = sum(service_anomaly_count.values())
+        logger.info(
+            "perform_shap_anomaly_detection: total_anomaly_count=%d, services=%s",
+            total_anomaly_count,
+            list(anomalies_by_service.keys()),
+        )
         
         return {
             'anomaly_count': total_anomaly_count,
@@ -471,8 +653,6 @@ def perform_shap_anomaly_detection(trace_df):
         }
 
 
-iso_forest = None
-iso_forest_features = None
 def get_trace_IsolationForest() -> IsolationForest:
     """
     Backwards-compatible helper that returns a single IsolationForest trained
@@ -503,29 +683,32 @@ def get_trace_IsolationForest() -> IsolationForest:
 
 def get_pattern_miss_rate_threshold(response_times, pattern=None, training_df=None):
     """
-    Calculate a per-pattern deadline threshold as mean + 1.5 * std.
+    Deadline threshold = mean + 1.5 * std for a response-time series.
+
     If a training traces dataframe is provided, prefer computing the
     threshold from that distribution (optionally restricted to the
     same pattern), falling back to the provided response_times.
     """
-    if training_df is not None and not training_df.empty and 'total' in training_df.columns:
+    if training_df is not None and not training_df.empty and "total" in training_df.columns:
         df = training_df
         if pattern is not None:
-            if 'pattern' not in df.columns:
-                span_cols = df.columns.difference(['id'])
+            if "pattern" not in df.columns:
+                span_cols = df.columns.difference(["id"])
                 df = df.copy()
-                df['pattern'] = df[span_cols].gt(0).astype(int).astype(str).agg("".join, axis=1)
-            df = df[df['pattern'] == pattern]
-        series = pd.to_numeric(df['total'], errors='coerce')
+                df["pattern"] = (
+                    df[span_cols].gt(0).astype(int).astype(str).agg("".join, axis=1)
+                )
+            df = df[df["pattern"] == pattern]
+        series = pd.to_numeric(df["total"], errors="coerce")
     else:
-        series = pd.to_numeric(response_times, errors='coerce')
+        series = pd.to_numeric(response_times, errors="coerce")
 
     if series is None or series.empty:
-        return 0
+        return 0.0
     mean_value = series.mean()
     if pd.isna(mean_value):
-        return 0
+        return 0.0
     std_value = series.std()
     if pd.isna(std_value):
-        return 0
-    return mean_value + (1.5 * std_value)
+        return 0.0
+    return float(mean_value + (1.5 * std_value))
