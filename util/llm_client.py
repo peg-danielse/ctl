@@ -649,10 +649,6 @@ def _call_vllm(messages):
 
     conversation_text = conversation_text.strip()
 
-    if len(conversation_text)/4 > (32768-4096): # MAX CONTEXT WINDOW TOKENS
-        logger.warning("Conversation text is too long, truncating")
-        conversation_text = conversation_text[]
-
     payload = {
         "model": _current_vllm_model_name,
         "prompt": conversation_text,
