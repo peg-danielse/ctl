@@ -282,8 +282,8 @@ def main(argv=None, **kwargs):
     os.makedirs(f"./output/{label}/data", exist_ok=True)
     
     # Configure logging
-    # log_level = logging.DEBUG if getattr(args, "verbose", False) else logging.INFO
-    log_level = logging.DEBUG
+    log_level = logging.DEBUG if getattr(args, "verbose", False) else logging.INFO
+    #log_level = logging.DEBUG
     logging.basicConfig(
         level=log_level,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -529,28 +529,28 @@ if __name__ == "__main__":
     experiments: list[dict] = []
 
     # baseline experiments
-    #for tags in tags_list:
-    #    experiments.append(
-    #        {
-    #            "l": f"{start}_baseline_endpoints-{'_'.join(tags)}",
-    #            "t": total_time,
-    #            "tags": tags,
-    #            "baseline": True,
-    #        }
-    #    )
+    for tags in tags_list:
+        experiments.append(
+            {
+                "l": f"{start}_baseline_endpoints-{'_'.join(tags)}",
+                "t": total_time,
+                "tags": tags,
+                "baseline": True,
+            }
+        )
 
     # adaptation experiments with hosted APIs (OpenAI, Gemini)
-    for tags in tags_list:
-        for llm in ("gemini", "openai"):
-            for i in (1, 2, 3):
-                experiments.append(
-                    {
-                        "l": f"{start}_{llm}_{i}_endpoints-{'_'.join(tags)}",
-                        "t": total_time,
-                        "tags": tags,
-                        "llm": llm,
-                    }
-                )
+    #for tags in tags_list:
+    #    for llm in ("gemini", "openai"):
+    #        for i in (1, 2, 3):
+    #            experiments.append(
+    #                {
+    #                    "l": f"{start}_{llm}_{i}_endpoints-{'_'.join(tags)}",
+    #                    "t": total_time,
+    #                    "tags": tags,
+    #                    "llm": llm,
+    #                }
+    #            )
 
     for experiment in experiments:
         print(f"{experiment['l']}")
@@ -558,8 +558,8 @@ if __name__ == "__main__":
     print("Starting the experiments in 20 seconds...")
     time.sleep(20)
 
-    for experiment in experiments:
-        main(argv=[], **experiment)
+    #for experiment in experiments:
+    #    main(argv=[], **experiment)
 
     # -------------------------------
     # vLLM-backed experiments:
