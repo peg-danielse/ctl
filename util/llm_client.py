@@ -633,7 +633,8 @@ def _call_vllm(messages):
     # Flatten the chat-style messages into a single text prompt, similar to _call_gemini.
     conversation_text = ""
     messages.reverse() # build messages in reverse order. 
-    for message in messages:
+    
+    for i, message in enumerate(messages):
         assert isinstance(message, list) and len(message) == 2, "Message must be a tuple with two elements"
         
         role, content = message
@@ -642,7 +643,8 @@ def _call_vllm(messages):
             content = str(content)            
 
         # if exceeds the context window. 
-        if len(conversation_text + f"{role.upper()}: {content}\n\n")/4 > (32768-4096):
+        if len(conversation_text + f"{role.upper()}: {content}\n\n") > (32768-4096):
+            logger.warning(f"confersation text too long removing the {len(messages)-i} ealiest messages from the context window.")
             break
 
         conversation_text = f"{role.upper()}: {content}\n\n {conversation_text}"
