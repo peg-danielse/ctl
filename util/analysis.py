@@ -705,18 +705,14 @@ def get_trace_IsolationForest() -> IsolationForest:
     return iso_forest, iso_forest_features
 
 
-import numpy as np
-
-# In NumPy/SciPy, the Quantile function is your VaR
-def calculate_var_and_cvar(data, alpha=0.95):
-    # VaR is literally just the alpha-quantile
+def calculate_CVaR(data, alpha=0.95):
     var_alpha = np.quantile(data, alpha)
     
-    # CVaR is the mean of everything >= that quantile
     tail = data[data >= var_alpha]
-    cvar_alpha = np.mean(tail)
+    cvar_alpha = np.mean(tail) 
     
     return cvar_alpha
+
 
 def get_pattern_miss_rate_threshold(response_times, pattern=None, training_df=None):
     """
@@ -743,5 +739,5 @@ def get_pattern_miss_rate_threshold(response_times, pattern=None, training_df=No
     if series is None or series.empty:
         return 0.0
 
-    _, cvar_alpha = calculate_var_and_cvar(series)
+    cvar_alpha = calculate_CVaR(series)
     return cvar_alpha
