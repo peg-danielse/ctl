@@ -169,9 +169,9 @@ def loadtest(duration, label, phase, tags=None):
         "--experiment-type", "1",
         "--a-min", str(500),
         "--a-avg", str(1000),
-        "--a-max", str(3000),
+        "--a-max", str(2000),
         "--a-n-steps", str(1),
-        "--dt", str(int(duration / 6)),
+        "--dt", str(int(duration / 24)),
         "--headless",
         "--tags", *tags,
     ]
@@ -254,7 +254,7 @@ def get_parser():
     return parser
 
 
-def main(argv=None, **kwargs):
+def main(argv=None, **kwargs): 
     parser = get_parser()
     if argv is None:
         argv = sys.argv[1:]
@@ -281,9 +281,11 @@ def main(argv=None, **kwargs):
         os.makedirs(f"./output/{baseline_label}/data", exist_ok=True)
     os.makedirs(f"./output/{label}/data", exist_ok=True)
     
-    # Configure logging
-    log_level = logging.DEBUG if getattr(args, "verbose", False) else logging.INFO
-    #log_level = logging.DEBUG
+    # Initialize config manager
+    config_manager = ConfigManager(label)
+
+    # configure logging
+    log_level = logging.INFO
     logging.basicConfig(
         level=log_level,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -295,9 +297,6 @@ def main(argv=None, **kwargs):
 
     global logger
     logger = logging.getLogger(__name__)
-    
-    # Initialize config manager
-    config_manager = ConfigManager(label)
     
     if args.init:
         logger.info("Waiting to fully accept initial configuration...")
@@ -518,10 +517,13 @@ def main(argv=None, **kwargs):
     move_label_outputs(label)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__": 
+    # Experiment setup
     start = datetime.now().strftime("%Y%m%d_%H%M%S")
-    total_time = 180
-    tags_list = (["search_hotel", "recommend"], ["search_hotel", "recommend", "reserve", "user_login"])
+    total_time = 720
+
+    #tags_list = (["search_hotel", "recommend"], ["search_hotel", "recommend", "reserve", "user_login"])
+    tags_list = (["search_hotel", "recommend", "reserve", "user_login"],)
 
     # -------------------------------
     # Baseline + OpenAI/Gemini experiments
@@ -540,27 +542,31 @@ if __name__ == "__main__":
         )
 
     # adaptation experiments with hosted APIs (OpenAI, Gemini)
-    #for tags in tags_list:
-    #    for llm in ("gemini", "openai"):
-    #        for i in (1, 2, 3):
-    #            experiments.append(
-    #                {
-    #                    "l": f"{start}_{llm}_{i}_endpoints-{'_'.join(tags)}",
-    #                    "t": total_time,
-    #                    "tags": tags,
-    #                    "llm": llm,
-    #                }
-    #            )
+    for tags in tags_list:
+        for llm in ("gimini",):
+            for i in (1,):
+                experiments.append(
+                    {
+                        "l": f"{start}_{llm}_{i}_endpoints-{'_'.join(tags)}",
+                        "t": total_time,
+                        "tags": tags,
+                        "llm": llm,
+                    }
+                )
+
+    
+    print("Starting the experiments in 20 seconds...")
 
     for experiment in experiments:
         print(f"{experiment['l']}")
 
-    print("Starting the experiments in 20 seconds...")
     time.sleep(20)
 
-    #for experiment in experiments:
-    #    main(argv=[], **experiment)
+    for experiment in experiments:
+        main(argv=[], **experiment)
 
+    exit()
+    
     # -------------------------------
     # vLLM-backed experiments:
     #   - For each HF model, start vLLM once,
@@ -574,8 +580,8 @@ if __name__ == "__main__":
         {"name": "Qwen/Qwen3.5-2B", "port": 8000, "short": "qwen35_2b"},
         #{"name": "Qwen/Qwen3.5-0.8B", "port": 8000, "short": "qwen35_08b"},
     ]
+    
     vllm_repetitions = (1,2)
-
     for model_cfg in vllm_models:
         model_name = model_cfg["name"]
         port = model_cfg["port"]
