@@ -440,6 +440,7 @@ def perform_shap_anomaly_detection(trace_df):
         }
     
     try:
+        import numpy as np
         import heapq
         from operator import itemgetter
         from config import SPAN_PROCESS_MAP
@@ -540,19 +541,42 @@ def perform_shap_anomaly_detection(trace_df):
 
             # Find anomalies within this pattern
             anomaly_mask_pat = anomaly_predictions == -1
+
+            # Filter anomalies based on the same per-pattern deadline threshold
+            # used for deadline miss rate calculations.
+            if "total" in df_pat.columns:
+                response_times_pat = pd.to_numeric(df_pat["total"], errors="coerce")
+                threshold_pat = get_pattern_miss_rate_threshold(
+                    response_times_pat,
+                    pattern=pattern,
+                    training_df=training_df,
+                )
+                # Use numpy coercion to avoid type-checker confusion around `.to_numpy()`.
+                time_above_threshold_mask = np.asarray(response_times_pat) > threshold_pat
+            else:
+                # If total is missing, keep all anomalies (can't evaluate "above threshold").
+                threshold_pat = 0.0
+                time_above_threshold_mask = np.ones(len(df_pat), dtype=bool)
+
+            filtered_anomaly_mask = anomaly_mask_pat & time_above_threshold_mask
+
             num_anom = int(anomaly_mask_pat.sum())
+            num_filtered = int(filtered_anomaly_mask.sum())
             logger.info(
-                "perform_shap_anomaly_detection: pattern %s => %d anomalies from IF (out of %d)",
-                pattern, num_anom, len(df_pat),
+                "perform_shap_anomaly_detection: pattern %s => %d anomalies after deadline filter (from %d)",
+                pattern,
+                num_filtered,
+                num_anom,
             )
-            if not anomaly_mask_pat.any():
+
+            if not filtered_anomaly_mask.any():
                 continue
 
-            anomaly_indices = df_pat.index[anomaly_mask_pat].tolist()
+            anomaly_indices = df_pat.index[filtered_anomaly_mask].tolist()
 
             # Use the same SHAP calculation method as get_kpi_list
             # Use label-based indexing to avoid positional out-of-bounds errors
-            anom_features = features_use.loc[anomaly_mask_pat]
+            anom_features = features_use.loc[filtered_anomaly_mask]
             shapes, names = shap_decisions(iso_forest, anom_features)
 
             dropped_no_service = 0
@@ -681,6 +705,19 @@ def get_trace_IsolationForest() -> IsolationForest:
     return iso_forest, iso_forest_features
 
 
+import numpy as np
+
+# In NumPy/SciPy, the Quantile function is your VaR
+def calculate_var_and_cvar(data, alpha=0.95):
+    # VaR is literally just the alpha-quantile
+    var_alpha = np.quantile(data, alpha)
+    
+    # CVaR is the mean of everything >= that quantile
+    tail = data[data >= var_alpha]
+    cvar_alpha = np.mean(tail)
+    
+    return cvar_alpha
+
 def get_pattern_miss_rate_threshold(response_times, pattern=None, training_df=None):
     """
     Deadline threshold = mean + 1.5 * std for a response-time series.
@@ -705,10 +742,6 @@ def get_pattern_miss_rate_threshold(response_times, pattern=None, training_df=No
 
     if series is None or series.empty:
         return 0.0
-    mean_value = series.mean()
-    if pd.isna(mean_value):
-        return 0.0
-    std_value = series.std()
-    if pd.isna(std_value):
-        return 0.0
-    return float(mean_value + (1.5 * std_value))
+
+    _, cvar_alpha = calculate_var_and_cvar(series)
+    return cvar_alpha
