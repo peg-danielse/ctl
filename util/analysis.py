@@ -706,17 +706,18 @@ def get_trace_IsolationForest() -> IsolationForest:
 
 
 def calculate_CVaR(data, alpha=0.95):
-    var_alpha = np.quantile(data, alpha)
-    
-    tail = data[data >= var_alpha]
-    cvar_alpha = np.mean(tail) 
-    
-    return cvar_alpha
+    series = pd.to_numeric(pd.Series(data), errors="coerce").dropna()
+    if series.empty:
+        return 0.0
+    arr = series.to_numpy(dtype=float, copy=False)
+    var_alpha = np.quantile(arr, alpha)
+    tail = arr[arr >= var_alpha]
+    return float(np.mean(tail))
 
 
 def get_pattern_miss_rate_threshold(response_times, pattern=None, training_df=None):
     """
-    Deadline threshold = mean + 1.5 * std for a response-time series.
+    Deadline threshold = CVaR (expected shortfall) of response times at alpha=0.95.
 
     If a training traces dataframe is provided, prefer computing the
     threshold from that distribution (optionally restricted to the
