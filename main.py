@@ -19,6 +19,7 @@ import yaml
 
 from util.config_manager import ConfigManager
 from util.data_retrieval import DataCollector
+from util.helper import run_remote_command
 from util.llm_client import (
     ChatManager,
     generate_prompt,
@@ -558,13 +559,36 @@ if __name__ == "__main__":
     print("Starting the experiments in 20 seconds...")
 
     for experiment in experiments:
+        
         print(f"{experiment['l']}")
 
     time.sleep(20)
 
+    run_remote_command(
+            host="145.100.135.11",
+            user="pager",
+            command=f"/home/pager/benchmarks/DeathStarBench/hotelReservation/knative/scripts/destroy-knative-svc.sh",
+            key_path="/home/pager/.ssh/id_ed25519",
+        )
+    
+
     for experiment in experiments:
+        run_remote_command(
+            host="145.100.135.11",
+            user="pager",
+            command=f"/home/pager/benchmarks/DeathStarBench/hotelReservation/knative/scripts/deploy-knative-svc.sh",
+            key_path="/home/pager/.ssh/id_ed25519",
+        )
+        
         main(argv=[], **experiment)
 
+        run_remote_command(
+            host="145.100.135.11",
+            user="pager",
+            command=f"/home/pager/benchmarks/DeathStarBench/hotelReservation/knative/scripts/destroy-knative-svc.sh",
+            key_path="/home/pager/.ssh/id_ed25519",
+        )
+        
     exit()
     
     # -------------------------------
