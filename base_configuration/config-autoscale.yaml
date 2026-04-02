@@ -4,6 +4,8 @@ metadata:
   name: config-autoscaler
   namespace: knative-serving
 data:
-  min-scale: "2"
-  initial-scale: "1"
-  allow-zero-initial-scale: "true"
+  max-scale-up-rate: "1000.0" # Default: 1000.0
+  max-scale-down-rate: "2.0" # Default: 2.0
+  scale-to-zero-pod-retention-period: "0s"
+  scale-to-zero-grace-period: "30s"
+  enable-scale-to-zero: "true" # true, false
