@@ -234,9 +234,9 @@ def get_parser():
     parser.add_argument("-l", dest="l", type=str, default="run", help="Label for this experiment run (used for output folders).")
     parser.add_argument("-t", dest="t", type=int, default=360, help="Total experiment duration in minutes.")
     parser.add_argument("-dt", type=int, default=60, help="Sampling window in seconds for monitoring.")
-    parser.add_argument("-m", type=int, default=10, help="Measurement duration per configuration in minutes.")
-    parser.add_argument("-s", type=int, default=5, help="Stabilization time between configurations in minutes.")
-    parser.add_argument("-a", type=int, default=16, help="Number of anomalies to process per iteration.")
+    parser.add_argument("-m", type=int, default=30, help="Measurement duration per configuration in minutes.")
+    parser.add_argument("-s", type=int, default=20, help="Stabilization time between configurations in minutes.")
+    parser.add_argument("-a", type=int, default=100, help="Number of anomalies to process per iteration.")
     parser.add_argument(
         "-llm",
         type=str,
@@ -532,15 +532,15 @@ if __name__ == "__main__":
     experiments: list[dict] = []
 
     # baseline experiments
-    for tags in tags_list:
-        experiments.append(
-            {
-                "l": f"{start}_baseline_endpoints-{'_'.join(tags)}",
-                "t": total_time,
-                "tags": tags,
-                "baseline": True,
-            }
-        )
+    #for tags in tags_list:
+    #    experiments.append(
+    #        {
+    #            "l": f"{start}_baseline_endpoints-{'_'.join(tags)}",
+    #            "t": total_time,
+    #            "tags": tags,
+    #            "baseline": True,
+    #        }
+    #    )
 
     # adaptation experiments with hosted APIs (OpenAI, Gemini)
     for tags in tags_list:
