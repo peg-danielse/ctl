@@ -6,8 +6,7 @@ load_dotenv()
 
 PATH = "."
 
-KUBE_URL = "https://localhost:6443" 
-KUBE_API_TOKEN = os.getenv("KUBE_API_TOKEN")
+KUBECONFIG_PATH = os.path.join(PATH, "secrets", "admin.conf")
 
 
 GEN_API_URL = "http://localhost:4242/generate"

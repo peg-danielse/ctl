@@ -9,7 +9,10 @@ from kubernetes import client, config
 import warnings
 warnings.filterwarnings('ignore', message="Unverified HTTPS request*")
 
-from config import PATH, KUBE_URL, KUBE_API_TOKEN
+from config import (
+    PATH,
+    KUBECONFIG_PATH,
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -146,14 +149,12 @@ def reset_k8s(api_client, path = PATH + "/base_config"):
 
 
 def get_k8s_api_client():
-    aConfiguration = client.Configuration()
-    aConfiguration.host = KUBE_URL
-    aConfiguration.verify_ssl = False
-    
-    # Check if KUBE_API_TOKEN is available
-    if KUBE_API_TOKEN is None:
-        raise ValueError("KUBE_API_TOKEN environment variable is not set. Please set it to your Kubernetes API token.")
-    
-    aConfiguration.api_key = {"authorization": "Bearer " + KUBE_API_TOKEN}
+    kubeconfig_path = os.path.abspath(os.path.expanduser(KUBECONFIG_PATH))
+    if not os.path.exists(kubeconfig_path):
+        raise ValueError(
+            f"Kubernetes config not found at {kubeconfig_path}. "
+            "Expected kubeconfig at secrets/admin.conf."
+        )
 
-    return client.ApiClient(aConfiguration)
+    logger.info("Loading Kubernetes config from %s", kubeconfig_path)
+    return config.new_client_from_config(config_file=kubeconfig_path)
