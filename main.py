@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import yaml
 
+from config import LOCUST_TARGET_URL, SSH_REMOTE_HOST
 from util.config_manager import ConfigManager
 from util.data_retrieval import DataCollector
 from util.helper import run_remote_command
@@ -155,8 +156,7 @@ def loadtest(duration, label, phase, tags=None):
         tags = DEFAULT_LOADTEST_TAGS
     logger.info(f"Pressure test {label}_{phase} for {duration} seconds (tags: {tags})")
 
-    # locust --processes 16 -f ./util/locust/hotel-reservations.py -H "http://145.100.135.11:30505" -t 600s --headless --csv mma1 --experiment-type 2 --w-shape 1 --w-mean 5000 --w-user-min 3000 --w-user-max 10000 --w-ls-y 2000 --w-dt 120 --seed 42
-    # locust --processes 16 -f ./util/locust/hotel-reservations.py -H "http://145.100.135.11:30505" -t 600s --headless --csv mma1 --experiment-type 1 --a-min 1000 --a-avg 3000 --a-max 8000 --a-n-steps 2 --dt 180
+    # locust -H uses LOCUST_TARGET_URL from config (CLUSTER_HOST + LOCUST_TARGET_PORT)
     # third experiment type: finding the absolute maximum load pattern
     # fourth experiment type: stressing the scheduler load pattern
     
@@ -164,7 +164,7 @@ def loadtest(duration, label, phase, tags=None):
         "locust",
         "--processes", "16",
         "-f", "./util/locust/hotel-reservations.py",
-        "-H", "http://145.100.135.11:30505",
+        "-H", LOCUST_TARGET_URL,
         "-t", str(duration) + "s",
         "--csv", label,
         "--experiment-type", "1",
@@ -565,7 +565,7 @@ if __name__ == "__main__":
     time.sleep(20)
 
     run_remote_command(
-            host="145.100.135.11",
+            host=SSH_REMOTE_HOST,
             user="pager",
             command=f"/home/pager/benchmarks/DeathStarBench/hotelReservation/knative/scripts/destroy-knative-svc.sh",
             key_path="/home/pager/.ssh/id_ed25519",
@@ -574,7 +574,7 @@ if __name__ == "__main__":
 
     for experiment in experiments:
         run_remote_command(
-            host="145.100.135.11",
+            host=SSH_REMOTE_HOST,
             user="pager",
             command=f"/home/pager/benchmarks/DeathStarBench/hotelReservation/knative/scripts/deploy-knative-svc.sh",
             key_path="/home/pager/.ssh/id_ed25519",
@@ -583,7 +583,7 @@ if __name__ == "__main__":
         main(argv=[], **experiment)
 
         run_remote_command(
-            host="145.100.135.11",
+            host=SSH_REMOTE_HOST,
             user="pager",
             command=f"/home/pager/benchmarks/DeathStarBench/hotelReservation/knative/scripts/destroy-knative-svc.sh",
             key_path="/home/pager/.ssh/id_ed25519",

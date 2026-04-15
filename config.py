@@ -1,5 +1,9 @@
 
 import os
+from typing import Optional
+from urllib.parse import urlparse
+
+import yaml
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -7,6 +11,52 @@ load_dotenv()
 PATH = "."
 
 KUBECONFIG_PATH = os.path.join(PATH, "secrets", "admin.conf")
+
+
+def _cluster_host_from_kubeconfig() -> Optional[str]:
+    """Return API server hostname from kubeconfig (first cluster), or None if missing/invalid."""
+    path = os.path.abspath(os.path.expanduser(KUBECONFIG_PATH))
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except OSError:
+        return None
+    if not data or not isinstance(data.get("clusters"), list) or not data["clusters"]:
+        return None
+    server = (data["clusters"][0].get("cluster") or {}).get("server")
+    if not server or not isinstance(server, str):
+        return None
+    parsed = urlparse(server)
+    host = parsed.hostname
+    return host
+
+
+_CLUSTER_HOST = os.getenv("CLUSTER_HOST") or _cluster_host_from_kubeconfig()
+if not _CLUSTER_HOST:
+    raise ValueError(
+        "CLUSTER_HOST is not set and could not be read from kubeconfig at "
+        f"{KUBECONFIG_PATH}. Set CLUSTER_HOST in the environment or provide a valid admin.conf."
+    )
+
+CLUSTER_HOST = _CLUSTER_HOST
+
+JAEGER_PORT = int(os.getenv("JAEGER_PORT", "30550"))
+PROMETHEUS_PORT = int(os.getenv("PROMETHEUS_PORT", "31207"))
+LOCUST_TARGET_PORT = int(os.getenv("LOCUST_TARGET_PORT", "30505"))
+
+JAEGER_BASE_URL = f"http://{CLUSTER_HOST}:{JAEGER_PORT}"
+PROMETHEUS_BASE_URL = f"http://{CLUSTER_HOST}:{PROMETHEUS_PORT}"
+LOCUST_TARGET_URL = f"http://{CLUSTER_HOST}:{LOCUST_TARGET_PORT}"
+
+# Optional: SSH target when it differs from CLUSTER_HOST (e.g. API via VIP, SSH to a node).
+SSH_REMOTE_HOST = os.getenv("SSH_REMOTE_HOST") or CLUSTER_HOST
+
+JAEGER_ENDPOINT_FSTRING = (
+    JAEGER_BASE_URL
+    + "/api/traces?limit={limit}&lookback={lookback}&service={service}&start={start}"
+)
 
 
 GEN_API_URL = "http://localhost:4242/generate"

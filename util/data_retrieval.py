@@ -12,15 +12,10 @@ import logging
 from typing import Any, Dict, Optional, cast
 from datetime import datetime, timedelta, timezone
 from util.analysis import metric_snapshot, align_traces_to_training_schema
+from config import JAEGER_BASE_URL, JAEGER_ENDPOINT_FSTRING, PROMETHEUS_BASE_URL
 
 # Configure logging
 logger = logging.getLogger(__name__)
-
-
-
-# Constants for monitoring endpoints
-JAEGER_ENDPOINT_FSTRING = "http://145.100.135.11:30550/api/traces?limit={limit}&lookback={lookback}&service={service}&start={start}"
-PROMETHEUS_BASE_URL = "http://145.100.135.11:31207"
 
 
 def convert_trace_data_to_dataframe(trace_data):
@@ -554,7 +549,7 @@ class DataCollector:
         start_us_padded = max(0, start_us - pad_us)
         end_us_padded = end_us + pad_us
         
-        base_url = "http://145.100.135.11:30550/api"
+        base_url = JAEGER_BASE_URL + "/api"
         traces_url = base_url + "/traces"
         services_url = base_url + "/services"
         
